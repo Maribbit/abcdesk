@@ -72,8 +72,11 @@ describe('package.json manifest', () => {
   it('[SPEC-CMD-03] 打开预览的编辑器标题栏与资源管理器入口共用同一命令', () => {
     const menus = manifest.contributes.menus;
 
-    expect(menus['editor/title']).toHaveLength(1);
-    expect(menus['editor/title'][0]).toMatchObject({
+    const titleEntries = menus['editor/title'].filter(
+      (entry) => entry.command === 'abcdesk.openPreviewToSide',
+    );
+    expect(titleEntries).toHaveLength(1);
+    expect(titleEntries[0]).toMatchObject({
       command: 'abcdesk.openPreviewToSide',
       when: 'resourceLangId == abc',
     });
@@ -101,6 +104,24 @@ describe('package.json manifest', () => {
       when: 'resourceLangId == abc',
       group: 'navigation',
     });
+  });
+
+  it('[SPEC-CMD-17] 预览面板标题栏提供转到源码的图标按钮，与命令面板共用同一命令', () => {
+    const menus = manifest.contributes.menus;
+    const goToSource = manifest.contributes.commands.find(
+      (command) => command.command === 'abcdesk.goToSource',
+    );
+
+    const gotoEntries = menus['editor/title'].filter(
+      (entry) => entry.command === 'abcdesk.goToSource',
+    );
+    expect(gotoEntries).toHaveLength(1);
+    expect(gotoEntries[0]).toMatchObject({
+      command: 'abcdesk.goToSource',
+      when: 'activeWebviewPanelId == abcdesk.preview',
+      group: 'navigation',
+    });
+    expect(goToSource?.icon).toBe('$(go-to-file)');
   });
 
   it('[SPEC-ENV-10] contributes.languages 声明 abc 语言与 .abc 扩展名', () => {

@@ -24,7 +24,7 @@ import {
  * - 文档变化到新版本渲染确认之间停用源码联动：不推送光标、不定位、不起播，并清除源码高亮（SPEC-PLAY-11）；
  * - 点击谱面音符的源码定位只设选区与滚动、不抢焦点，编辑器侧以专用轮廓标记呈现该片段（与原生选区、同文高亮双重区分）；播放高亮只对可见编辑器设装饰（SPEC-PLAY-11）；
  * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
- * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点（SPEC-STATE-05 / CMD-12）。
+ * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点，来源标签关闭后按 URI 重新打开（SPEC-STATE-05 / CMD-12）。
  *
  * 键盘可视化等行为由后续批次接入（见 docs/spec/play.md、state.md）。
  */
@@ -41,6 +41,8 @@ interface PanelEntry {
   document: vscode.TextDocument;
   /** 最近一次推送的文档版本（SPEC-ENV-04 版本校验基准，rendered 消息按此比对）。 */
   version: number;
+  /** 最近一次推送给预览的文档文本（SPEC-CMD-12）：来源标签关闭后重新打开时按内容差异决定是否换版。 */
+  lastPushedAbc: string | undefined;
   /** 是否已收到过渲染结果（播放类命令据此决定立即转发还是等待渲染）。 */
   renderedOnce: boolean;
   /** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）；取消或渲染失败时丢弃。 */
@@ -156,9 +158,14 @@ export class PreviewPanelManager implements vscode.Disposable {
 
   /**
    * "转到源码编辑"命令（SPEC-CMD-12）：打开来源文档并显式转移焦点；
-   * 无有效音符映射时只打开文件、不套用旧偏移；来源不可用时说明原因。
+   * 无有效音符映射时只打开文件、不套用旧偏移；来源标签已关闭时按 URI 重新打开。
    */
   async requestGoToSource(document: vscode.TextDocument): Promise<void> {
+    if (document.isClosed) {
+      // 防御：收到已关闭的文档对象时按 URI 走重新打开路径（SPEC-CMD-12）
+      await this.requestGoToSourceByUri(document.uri.toString());
+      return;
+    }
     const entry = this.panels.get(document.uri.toString());
     const range = entry?.lastNoteRange;
     try {
@@ -177,11 +184,46 @@ export class PreviewPanelManager implements vscode.Disposable {
       editor.selection = selection;
       editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     } catch (error) {
-      console.error('ABC Desk: go to source failed', error);
-      void vscode.window.showInformationMessage(
-        vscode.l10n.t('The source document is unavailable.'),
-      );
+      this.reportSourceUnavailable(error);
     }
+  }
+
+  /**
+   * 来源标签已关闭时的"转到源码编辑"（SPEC-CMD-12）：文件可读取时按 URI 重新打开并显式转移焦点，
+   * 预览继续绑定该文件（SPEC-LIFE-05）——磁盘内容有变化时按常规换版规则推送（SPEC-STATE-07），
+   * 未变化不推送以避免无谓换版归零、保留播放位置；文件被删除 / 无法读取时说明原因，不自动新建同路径文件。
+   */
+  async requestGoToSourceByUri(uriText: string): Promise<void> {
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uriText));
+      const entry = this.panels.get(uriText);
+      if (entry !== undefined) {
+        entry.document = document;
+        if (entry.lastPushedAbc !== document.getText()) {
+          // 标签关闭期间的磁盘变化：先停用旧联动，再按最新内容换版（SPEC-PLAY-11 / SPEC-STATE-07）
+          entry.suspend = true;
+          entry.lastNoteRange = undefined;
+          this.clearSourceHighlight(entry);
+          this.syncLinkedDecorations();
+          this.pushDocument(entry, document);
+        }
+      }
+      await vscode.window.showTextDocument(document, {
+        viewColumn: vscode.ViewColumn.One,
+        preview: false,
+        preserveFocus: false,
+      });
+    } catch (error) {
+      this.reportSourceUnavailable(error);
+    }
+  }
+
+  /** 来源文档打开失败的统一说明（SPEC-CMD-12）：不静默失败，不自动新建同路径文件。 */
+  private reportSourceUnavailable(error: unknown): void {
+    console.error('ABC Desk: go to source failed', error);
+    void vscode.window.showInformationMessage(
+      vscode.l10n.t('The source document is unavailable.'),
+    );
   }
 
   /** 停止命令入口（SPEC-CMD-10 / 11）：不新建预览；停音与取消起播不因音频未就绪失效。 */
@@ -201,6 +243,16 @@ export class PreviewPanelManager implements vscode.Disposable {
         return vscode.workspace.textDocuments.find(
           (document) => document.uri.toString() === entry.uri,
         );
+      }
+    }
+    return undefined;
+  }
+
+  /** 前台预览的绑定 URI（SPEC-CMD-04 / CMD-12）：绑定不因来源标签关闭而失效（SPEC-LIFE-05），供"转到源码编辑"按 URI 重新打开。 */
+  activeBoundUri(): string | undefined {
+    for (const entry of this.panels.values()) {
+      if (entry.panel.active) {
+        return entry.uri;
       }
     }
     return undefined;
@@ -291,6 +343,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       uri: document.uri.toString(),
       document,
       version: document.version,
+      lastPushedAbc: undefined,
       renderedOnce: false,
       pendingRequest: request,
       // 首次渲染完成前不应用联动（SPEC-PLAY-11）
@@ -434,13 +487,12 @@ export class PreviewPanelManager implements vscode.Disposable {
     void entry.panel.webview.postMessage(message);
   }
 
-  /** 空状态"转到源码编辑"入口（SPEC-STATE-05）：打开来源文档并显式转移焦点；目标取面板绑定，不接受 webview 提供的路径。 */
+  /**
+   * 状态页"转到源码编辑"入口（SPEC-STATE-05 / CMD-12）：与命令共用打开路径
+   * （含来源标签关闭后的按 URI 重新打开）；目标取面板绑定，不接受 webview 提供的路径。
+   */
   private revealSource(entry: PanelEntry): void {
-    void vscode.window.showTextDocument(entry.document, {
-      viewColumn: vscode.ViewColumn.One,
-      preview: false,
-      preserveFocus: false,
-    });
+    void this.requestGoToSource(entry.document);
   }
 
   /**
@@ -539,6 +591,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       isUntitled: document.isUntitled,
       version: document.version,
     };
+    entry.lastPushedAbc = message.abc;
     void entry.panel.webview.postMessage(message);
   }
 

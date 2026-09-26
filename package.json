@@ -53,7 +53,8 @@
       {
         "command": "abcdesk.goToSource",
         "title": "%abcdesk.command.goToSource.title%",
-        "category": "ABC Desk"
+        "category": "ABC Desk",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "abcdesk.exportMidi",
@@ -87,6 +88,11 @@
         {
           "command": "abcdesk.openPreviewToSide",
           "when": "resourceLangId == abc",
+          "group": "navigation"
+        },
+        {
+          "command": "abcdesk.goToSource",
+          "when": "activeWebviewPanelId == abcdesk.preview",
           "group": "navigation"
         }
       ],

@@ -161,15 +161,22 @@ function playFromSelectedNoteCommand(previews: PreviewPanelManager): void {
 
 /**
  * "转到源码编辑"命令（SPEC-CMD-12）：目标为当前预览的来源文档并显式转移焦点；
- * 无有效音符映射时只打开来源文件、不套用旧偏移；来源不可用时说明原因。
+ * 无有效音符映射时只打开来源文件、不套用旧偏移；来源标签已关闭时按 URI 重新打开，
+ * 文件不可读取时才说明原因。
  */
 function goToSourceCommand(previews: PreviewPanelManager): void {
   const document = resolveControlTarget(previews);
-  if (document === undefined) {
-    void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
+  if (document !== undefined) {
+    void previews.requestGoToSource(document);
     return;
   }
-  void previews.requestGoToSource(document);
+  // 前台预览的来源标签已关闭（SPEC-LIFE-05）：绑定仍在，按 URI 重新打开（SPEC-CMD-12）
+  const boundUri = previews.activeBoundUri();
+  if (boundUri !== undefined) {
+    void previews.requestGoToSourceByUri(boundUri);
+    return;
+  }
+  void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
 }
 
 /**
