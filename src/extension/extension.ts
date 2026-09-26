@@ -25,11 +25,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('abcdesk.openPreviewToSide', (resource?: unknown) =>
       openPreviewToSide(previews, resource),
     ),
+    // 播放主干（M0）：播放 / 暂停与停止（SPEC-CMD-07 / 09 / 10 / 11）。
+    vscode.commands.registerCommand('abcdesk.togglePlayback', () => togglePlaybackCommand(previews)),
+    vscode.commands.registerCommand('abcdesk.stop', () => stopPlaybackCommand(previews)),
   );
 
   // 其余命令为骨架占位：实现前必须先补全对应规格条目并写绑定测试。
+  const implemented = new Set<string>(['abcdesk.openPreviewToSide', 'abcdesk.togglePlayback', 'abcdesk.stop']);
   for (const id of COMMAND_IDS) {
-    if (id === 'abcdesk.openPreviewToSide') {
+    if (implemented.has(id)) {
       continue;
     }
     context.subscriptions.push(
@@ -81,6 +85,48 @@ async function openPreviewToSide(previews: PreviewPanelManager, resource: unknow
 
   const open = vscode.workspace.textDocuments.find((document) => document.uri.toString() === target.uri);
   previews.createOrShow(open ?? (await vscode.workspace.openTextDocument(vscode.Uri.parse(target.uri))));
+}
+
+/**
+ * 播放 / 暂停命令（SPEC-CMD-07 / 09 / 11）：控制当前曲目，不跟随光标切曲；
+ * 无有效目标时不回退、不弹选择器，说明缺少目标（SPEC-CMD-05）。
+ */
+function togglePlaybackCommand(previews: PreviewPanelManager): void {
+  const document = resolveControlTarget(previews);
+  if (document === undefined) {
+    void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
+    return;
+  }
+  previews.requestToggle(document);
+}
+
+/**
+ * 停止命令（SPEC-CMD-10 / 11）：不新建预览；
+ * 无有效目标时说明缺少目标，无副作用（SPEC-CMD-05）。
+ */
+function stopPlaybackCommand(previews: PreviewPanelManager): void {
+  const document = resolveControlTarget(previews);
+  if (document === undefined) {
+    void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
+    return;
+  }
+  previews.requestStop(document);
+}
+
+/**
+ * 控制命令的目标解析（SPEC-CMD-04 / 05）：预览在前台时使用其绑定文档，
+ * 否则使用调用前的活动编辑器上下文；无目标时返回 undefined，不回退到其他文件。
+ */
+function resolveControlTarget(previews: PreviewPanelManager): vscode.TextDocument | undefined {
+  const fromPreview = previews.activeDocument();
+  if (fromPreview !== undefined) {
+    return fromPreview;
+  }
+  const target = choosePreviewTarget(undefined, activeCandidate());
+  if (target === undefined) {
+    return undefined;
+  }
+  return vscode.workspace.textDocuments.find((document) => document.uri.toString() === target.uri);
 }
 
 function candidateFromUri(uri: vscode.Uri): TargetCandidate {

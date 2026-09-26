@@ -1,4 +1,5 @@
 {
   "Command {0} is not implemented yet.": "命令 {0} 尚未实现。",
+  "No ABC target is available.": "没有可用的 ABC 目标。",
   "{0} (Unsaved)": "{0}（尚未保存）"
 }
