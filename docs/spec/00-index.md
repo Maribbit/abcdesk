@@ -31,14 +31,14 @@
 | 域 | 主题 | 文件 | 状态 |
 | --- | --- | --- | --- |
 | CMD | 命令与入口 | cmd.md | 已全量蒸馏 |
-| LIFE | 文件生命周期 | life.md | 待补全 |
+| LIFE | 文件生命周期 | life.md | 已蒸馏 |
 | DOC | 文档与多曲目 | doc.md | 待补全 |
 | SET | 设置与恢复 | set.md | 首条已蒸馏，其余待补全 |
 | PLAY | 播放与练习控制 | play.md | 待补全 |
-| STATE | 状态、错误与恢复 | state.md | 待补全 |
+| STATE | 状态、错误与恢复 | state.md | 已蒸馏 |
 | PERF | 性能保护与等待 | perf.md | 待补全 |
 | EXP | 导出 | exp.md | 待补全 |
-| ENV | 运行环境与安全 | env.md | 待补全 |
+| ENV | 运行环境与安全 | env.md | 已蒸馏 |
 | L10N | 本地化与文案 | l10n.md | 待补全 |
 | A11Y | 无障碍与焦点 | a11y.md | 待补全 |
 
