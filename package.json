@@ -17,46 +17,52 @@
   "activationEvents": [
     "onLanguage:abc"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "contributes": {
     "commands": [
       {
         "command": "abcdesk.openPreviewToSide",
-        "title": "Open Music Preview to Side",
-        "category": "ABC Desk"
+        "title": "%abcdesk.command.openPreviewToSide.title%",
+        "category": "ABC Desk",
+        "icon": "$(open-preview)"
       },
       {
         "command": "abcdesk.togglePlayback",
-        "title": "Play / Pause",
+        "title": "%abcdesk.command.togglePlayback.title%",
         "category": "ABC Desk"
       },
       {
         "command": "abcdesk.stop",
-        "title": "Stop and Return to Start",
+        "title": "%abcdesk.command.stop.title%",
         "category": "ABC Desk"
       },
       {
         "command": "abcdesk.playFromCursor",
-        "title": "Play from Cursor",
+        "title": "%abcdesk.command.playFromCursor.title%",
         "category": "ABC Desk"
       },
       {
         "command": "abcdesk.playFromSelectedNote",
-        "title": "Play from Selected Note",
+        "title": "%abcdesk.command.playFromSelectedNote.title%",
         "category": "ABC Desk"
       },
       {
         "command": "abcdesk.goToSource",
-        "title": "Go to Source Editor",
+        "title": "%abcdesk.command.goToSource.title%",
         "category": "ABC Desk"
       },
       {
         "command": "abcdesk.exportMidi",
-        "title": "Export MIDI",
+        "title": "%abcdesk.command.exportMidi.title%",
         "category": "ABC Desk"
       },
       {
         "command": "abcdesk.exportSvg",
-        "title": "Export SVG",
+        "title": "%abcdesk.command.exportSvg.title%",
         "category": "ABC Desk"
       }
     ],
@@ -66,9 +72,30 @@
         "abcdesk.rememberPracticeSettings": {
           "type": "boolean",
           "default": true,
-          "description": "Remember per-file practice settings (speed, loop, voices, hints, keyboard state) locally. Turning it off stops restoring and saving history without interrupting the current preview."
+          "description": "%abcdesk.configuration.rememberPracticeSettings.description%"
         }
       }
+    },
+    "languages": [
+      {
+        "id": "abc",
+        "extensions": [".abc"]
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "abcdesk.openPreviewToSide",
+          "when": "resourceLangId == abc",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "abcdesk.openPreviewToSide",
+          "when": "resourceExtname == .abc"
+        }
+      ]
     }
   },
   "scripts": {
@@ -92,5 +119,8 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.3",
     "vitest": "^4.1.6"
+  },
+  "dependencies": {
+    "abcjs": "^6.7.1"
   }
 }

@@ -1,0 +1,11 @@
+{
+  "abcdesk.command.openPreviewToSide.title": "打开音乐预览（侧边）",
+  "abcdesk.command.togglePlayback.title": "播放 / 暂停",
+  "abcdesk.command.stop.title": "停止并回到开头",
+  "abcdesk.command.playFromCursor.title": "从光标播放",
+  "abcdesk.command.playFromSelectedNote.title": "从所选音符播放",
+  "abcdesk.command.goToSource.title": "转到源码编辑",
+  "abcdesk.command.exportMidi.title": "导出 MIDI",
+  "abcdesk.command.exportSvg.title": "导出 SVG",
+  "abcdesk.configuration.rememberPracticeSettings.description": "在本地记忆每个文件的练习设置（速度、循环、声部、提示、键盘状态）。关闭后停止恢复和保存历史，但不打断当前预览。"
+}

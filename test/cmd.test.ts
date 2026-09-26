@@ -5,10 +5,7 @@ import { describe, it } from 'vitest';
 
 describe('命令与入口（SPEC-CMD 域）', () => {
   it.todo('[SPEC-CMD-02] 命令分组为 "ABC Desk"，可在相关上下文发现并自行绑定，不新增默认组合键');
-  it.todo('[SPEC-CMD-03] 打开预览三入口共用同一命令，同文件复用不重复创建');
-  it.todo('[SPEC-CMD-04] 明确目标优先，无显式目标使用调用前的活动音乐上下文');
-  it.todo('[SPEC-CMD-05] 无目标不执行、不回退最近预览，仅打开预览命令允许选文件');
-  it.todo('[SPEC-CMD-06] 未保存 ABC 新文档为有效目标，预览标明尚未保存');
+  it.todo('[SPEC-CMD-03] 同文件复用已有预览不重复创建、只显示不新起播（运行时行为）');
   it.todo('[SPEC-CMD-07] 播放与从光标播放可按需打开预览并保留源码焦点，停止不新建预览');
   it.todo('[SPEC-CMD-08] 从光标播放与从所选音符播放上下文分离，不做跨源回退');
   it.todo('[SPEC-CMD-09] 播放／暂停控制当前曲目不跟随光标，准备中执行取消起播');

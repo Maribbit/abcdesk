@@ -1,0 +1,11 @@
+{
+  "abcdesk.command.openPreviewToSide.title": "Open Music Preview to Side",
+  "abcdesk.command.togglePlayback.title": "Play / Pause",
+  "abcdesk.command.stop.title": "Stop and Return to Start",
+  "abcdesk.command.playFromCursor.title": "Play from Cursor",
+  "abcdesk.command.playFromSelectedNote.title": "Play from Selected Note",
+  "abcdesk.command.goToSource.title": "Go to Source Editor",
+  "abcdesk.command.exportMidi.title": "Export MIDI",
+  "abcdesk.command.exportSvg.title": "Export SVG",
+  "abcdesk.configuration.rememberPracticeSettings.description": "Remember per-file practice settings (speed, loop, voices, hints, keyboard state) locally. Turning it off stops restoring and saving history without interrupting the current preview."
+}

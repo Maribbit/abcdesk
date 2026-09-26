@@ -56,3 +56,9 @@
 - 验证：manual
 - 里程碑：M0
 - 依据：D0 设计 §2；计划 §7 清单第 16 项
+
+### SPEC-ENV-10 ABC 语言关联
+- 规范：`contributes.languages` 声明 `abc` 语言（扩展名 `.abc`），使 `.abc` 文件进入 ABC 语言上下文并可按 `onLanguage:abc` 激活；文件关联与菜单贡献为声明式贡献，未激活时已可见（激活零开销见 SPEC-ENV-09）。
+- 验证：auto
+- 里程碑：M0
+- 依据：D0 设计 §2

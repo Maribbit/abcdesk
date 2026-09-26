@@ -8,6 +8,13 @@ interface CommandContribution {
   command: string;
   title: string;
   category?: string;
+  icon?: string;
+}
+
+interface MenuContribution {
+  command: string;
+  when?: string;
+  group?: string;
 }
 
 interface SettingSchema {
@@ -21,6 +28,8 @@ interface PackageManifest {
     configuration: {
       properties: Record<string, SettingSchema>;
     };
+    languages: Array<{ id: string; extensions: string[] }>;
+    menus: Record<string, MenuContribution[]>;
   };
 }
 
@@ -57,6 +66,36 @@ describe('package.json manifest', () => {
     expect(properties['abcdesk.rememberPracticeSettings']).toMatchObject({
       type: 'boolean',
       default: true,
+    });
+  });
+
+  it('[SPEC-CMD-03] 打开预览的编辑器标题栏与资源管理器入口共用同一命令', () => {
+    const menus = manifest.contributes.menus;
+
+    expect(menus['editor/title']).toHaveLength(1);
+    expect(menus['editor/title'][0]).toMatchObject({
+      command: 'abcdesk.openPreviewToSide',
+      when: 'resourceLangId == abc',
+    });
+    expect(menus['explorer/context']).toHaveLength(1);
+    expect(menus['explorer/context'][0]).toMatchObject({
+      command: 'abcdesk.openPreviewToSide',
+      when: 'resourceExtname == .abc',
+    });
+  });
+
+  it('[SPEC-CMD-15] 编辑器标题栏预览入口以内置图标按钮呈现', () => {
+    const openPreview = manifest.contributes.commands.find(
+      (command) => command.command === 'abcdesk.openPreviewToSide',
+    );
+
+    expect(openPreview?.icon).toBe('$(open-preview)');
+  });
+
+  it('[SPEC-ENV-10] contributes.languages 声明 abc 语言与 .abc 扩展名', () => {
+    expect(manifest.contributes.languages).toContainEqual({
+      id: 'abc',
+      extensions: ['.abc'],
     });
   });
 });
