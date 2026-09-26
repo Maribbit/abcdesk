@@ -286,8 +286,8 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     #controls button:hover { background: var(--vscode-button-hoverBackground); }
     #playback-status { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
-    /* 谱面按纸张外观呈现，浅色 / 深色主题下均可读 */
-    #score { padding: 12px; background: #ffffff; min-height: 120px; }
+    /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线 */
+    #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; }
     #score svg { display: block; }
   </style>
 </head>
