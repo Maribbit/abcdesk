@@ -1,0 +1,96 @@
+{
+  "name": "abcdesk",
+  "displayName": "ABC Desk",
+  "description": "A practice-oriented ABC music workbench: score preview, playback and a file-based practice loop.",
+  "version": "0.0.1",
+  "publisher": "abcdesk",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:abc"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "abcdesk.openPreviewToSide",
+        "title": "Open Music Preview to Side",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.togglePlayback",
+        "title": "Play / Pause",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.stop",
+        "title": "Stop and Return to Start",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.playFromCursor",
+        "title": "Play from Cursor",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.playFromSelectedNote",
+        "title": "Play from Selected Note",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.goToSource",
+        "title": "Go to Source Editor",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.exportMidi",
+        "title": "Export MIDI",
+        "category": "ABC Desk"
+      },
+      {
+        "command": "abcdesk.exportSvg",
+        "title": "Export SVG",
+        "category": "ABC Desk"
+      }
+    ],
+    "configuration": {
+      "title": "ABC Desk",
+      "properties": {
+        "abcdesk.rememberPracticeSettings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remember per-file practice settings (speed, loop, voices, hints, keyboard state) locally. Turning it off stops restoring and saving history without interrupting the current preview."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "spec:check": "node scripts/spec-check.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run spec:check"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.75.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.3.0",
+    "globals": "^17.6.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.3",
+    "vitest": "^4.1.6"
+  }
+}
