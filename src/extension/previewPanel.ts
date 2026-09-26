@@ -13,9 +13,11 @@ import {
  * - 同一文档复用已有面板，不重复创建（SPEC-CMD-03）；
  * - webview 资源仅经 asWebviewUri 加载，CSP 只放行 nonce 自有脚本与扩展自有资源（SPEC-ENV-03 / 05）；
  * - 不信任 webview 消息，经 parseWebviewMessage 按类型与版本校验（SPEC-ENV-04）；
- * - 文档变化（含未保存修改）推送到对应预览；标题与状态行标明尚未保存的新文档（SPEC-CMD-06）；
- * - 播放类命令可按需显示预览并保留源码焦点，首次渲染完成后仅执行仍有效的起播请求（SPEC-CMD-07 / 09）；
- * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）。
+ * - 文档变化（含未保存修改）经防抖推送到对应预览；标题与状态行标明尚未保存的新文档（SPEC-CMD-06）；
+ * - 播放中的换版与应用时机由 webview 按 SPEC-STATE-07 执行，宿主只负责推送最新版本；
+ * - 播放类命令可按需显示预览并保留源码焦点，首次渲染成功后仅执行仍有效的起播请求（SPEC-CMD-07 / 09）；
+ * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
+ * - 空状态的"转到源码编辑"入口打开来源文档并转移焦点（SPEC-STATE-05）。
  *
  * 键盘可视化与源码联动等行为由后续批次接入（见 docs/spec/play.md、state.md）。
  */
@@ -35,9 +37,14 @@ interface PanelEntry {
   pendingToggle: boolean;
 }
 
+/** 文档更新推送防抖（毫秒）：连续输入只在稳定后推送一次最新版本。 */
+const UPDATE_DEBOUNCE_MS = 300;
+
 export class PreviewPanelManager implements vscode.Disposable {
   private readonly panels = new Map<string, PanelEntry>();
   private readonly disposables: vscode.Disposable[] = [];
+  /** 各文档待推送的防抖计时器（按 URI 键控）。 */
+  private readonly updateTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -94,12 +101,26 @@ export class PreviewPanelManager implements vscode.Disposable {
     return undefined;
   }
 
-  /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）。 */
+  /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）；连续变化防抖，只推送稳定后的最新版本。 */
   notifyDocumentChanged(document: vscode.TextDocument): void {
-    const entry = this.panels.get(document.uri.toString());
-    if (entry !== undefined) {
-      this.pushDocument(entry, document);
+    const uri = document.uri.toString();
+    const entry = this.panels.get(uri);
+    if (entry === undefined) {
+      return;
     }
+    const existing = this.updateTimers.get(uri);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+    }
+    this.updateTimers.set(
+      uri,
+      setTimeout(() => {
+        this.updateTimers.delete(uri);
+        if (this.panels.get(uri) === entry) {
+          this.pushDocument(entry, document);
+        }
+      }, UPDATE_DEBOUNCE_MS),
+    );
   }
 
   private createPanel(document: vscode.TextDocument, pendingToggle = false): void {
@@ -138,6 +159,11 @@ export class PreviewPanelManager implements vscode.Disposable {
         if (this.panels.get(entry.uri) === entry) {
           this.panels.delete(entry.uri);
         }
+        const timer = this.updateTimers.get(entry.uri);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          this.updateTimers.delete(entry.uri);
+        }
       },
       undefined,
       this.disposables,
@@ -169,6 +195,10 @@ export class PreviewPanelManager implements vscode.Disposable {
           this.handleRendered(entry, parsed);
           return;
         }
+        if (parsed.type === 'reveal-source') {
+          this.revealSource(entry);
+          return;
+        }
         this.handlePlaybackState(entry, parsed.state);
       },
       undefined,
@@ -186,9 +216,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       return;
     }
     entry.pendingToggle = false;
-    if (entry.panel.visible) {
-      this.postPlayback(entry, 'toggle');
+    // 渲染失败时没有可起播的曲目，丢弃该请求；只执行仍有效且成功的请求（SPEC-CMD-07）
+    if (!message.ok || !entry.panel.visible) {
+      return;
     }
+    this.postPlayback(entry, 'toggle');
   }
 
   /** 同一窗口内只允许一处预览发声：任一面板起播时暂停其他面板（SPEC-PLAY-01）。 */
@@ -206,6 +238,15 @@ export class PreviewPanelManager implements vscode.Disposable {
   private postPlayback(entry: PanelEntry, action: PlaybackMessage['action']): void {
     const message: PlaybackMessage = { type: 'playback', action };
     void entry.panel.webview.postMessage(message);
+  }
+
+  /** 空状态"转到源码编辑"入口（SPEC-STATE-05）：打开来源文档并显式转移焦点；目标取面板绑定，不接受 webview 提供的路径。 */
+  private revealSource(entry: PanelEntry): void {
+    void vscode.window.showTextDocument(entry.document, {
+      viewColumn: vscode.ViewColumn.One,
+      preview: false,
+      preserveFocus: false,
+    });
   }
 
   private pushDocument(entry: PanelEntry, document: vscode.TextDocument): void {
@@ -275,7 +316,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       padding: 6px 12px;
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
-    #controls button {
+    #controls button, #content-status button {
       font: inherit;
       padding: 4px 10px;
       color: var(--vscode-button-foreground);
@@ -284,8 +325,19 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 2px;
       cursor: pointer;
     }
-    #controls button:hover { background: var(--vscode-button-hoverBackground); }
+    #controls button:hover, #content-status button:hover { background: var(--vscode-button-hoverBackground); }
     #playback-status { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+    /* 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 待更新提示，位于控制区下方 */
+    #content-status {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      border-bottom: 1px solid var(--vscode-panel-border, transparent);
+    }
+    #content-status[hidden] { display: none; }
     /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线 */
     #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; }
     #score svg { display: block; }
@@ -297,6 +349,10 @@ export class PreviewPanelManager implements vscode.Disposable {
     <button id="play" type="button"></button>
     <button id="stop" type="button"></button>
     <span id="playback-status" role="status" aria-live="polite"></span>
+  </div>
+  <div id="content-status" role="status" aria-live="polite" hidden>
+    <span id="content-status-text"></span>
+    <button id="reveal-source" type="button" hidden></button>
   </div>
   <div id="score"></div>
   <script nonce="${nonce}">window.__abcdesk = { soundfontUrl: ${JSON.stringify(soundfontUrl)} };</script>
@@ -310,6 +366,10 @@ export class PreviewPanelManager implements vscode.Disposable {
       entry.panel.dispose();
     }
     this.panels.clear();
+    for (const timer of this.updateTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.updateTimers.clear();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }

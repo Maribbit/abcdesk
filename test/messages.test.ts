@@ -50,6 +50,13 @@ describe('消息桥校验（SPEC-ENV-04）', () => {
     expect(parseWebviewMessage({ type: 'playback-state' })).toBeUndefined();
   });
 
+  it('[SPEC-ENV-04] reveal-source 无载荷请求：额外字段丢失，目标路径不由 webview 指定', () => {
+    expect(parseWebviewMessage({ type: 'reveal-source' })).toEqual({ type: 'reveal-source' });
+    expect(parseWebviewMessage({ type: 'reveal-source', uri: 'file:///etc/passwd' })).toEqual({
+      type: 'reveal-source',
+    });
+  });
+
   it('[SPEC-ENV-04] webview 侧同样校验宿主消息：document 形状完整才接受，playback 仅限三个动作', () => {
     const documentMessage = {
       type: 'document',

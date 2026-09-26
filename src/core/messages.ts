@@ -25,10 +25,16 @@ export interface WebviewPlaybackStateMessage {
   state: 'idle' | 'preparing' | 'playing' | 'paused';
 }
 
+/** 请求宿主打开来源文档并转移焦点（空状态入口，SPEC-STATE-05；目标由宿主按面板绑定决定，不接受任意路径）。 */
+export interface WebviewRevealSourceMessage {
+  type: 'reveal-source';
+}
+
 export type WebviewMessage =
   | WebviewReadyMessage
   | WebviewRenderedMessage
-  | WebviewPlaybackStateMessage;
+  | WebviewPlaybackStateMessage
+  | WebviewRevealSourceMessage;
 
 /** 解析 webview 消息：只接受形状完整的已登记类型，丢弃额外字段。 */
 export function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
@@ -48,6 +54,9 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
   }
   if (message.type === 'playback-state' && isPlaybackState(message.state)) {
     return { type: 'playback-state', state: message.state };
+  }
+  if (message.type === 'reveal-source') {
+    return { type: 'reveal-source' };
   }
   return undefined;
 }

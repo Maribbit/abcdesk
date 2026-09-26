@@ -5,7 +5,7 @@ import { synth, type MidiBuffer, type NoteMapTrack, type SynthOptions, type Tune
  * - 先渲染谱面，首次明确播放才准备音频；准备成功后直接执行这次仍有效的请求，无需再点一次；
  * - 准备期间再次播放 / 暂停（含隐藏与预览接替触发的暂停）取消起播，晚到完成一律不得发声；
  * - 停止立即停音并回到开头；暂停保留位置；已准备资源可复用（本类合成器 + abcjs 内部音色缓存）；
- * - 播放期间的内容更新保留当前快照，暂停 / 停止 / 自然结束时统一应用并归零（SPEC-STATE-07）；
+ * - 内容更新的缓存与统一应用时机由 main 协调（SPEC-STATE-07）；本类经 setTune 采用新曲目并归零；
  * - 浏览器要求用户与预览交互后才能恢复音频设备：未交互时提示"点击预览开始播放"、
  *   不因等待报超时，首次交互后自动继续仍然有效的起播（SPEC-PLAY-14）；
  * - 首版仅钢琴音色：所有乐器指令统一为钢琴，绝不触发 abcjs 默认远程音色地址（SPEC-ENV-07）。
@@ -44,9 +44,6 @@ export class PlaybackController {
   private readonly synthOptions: SynthOptions;
   private synthInstance: MidiBuffer | undefined;
   private tune: TuneObject | undefined;
-  /** 播放期间到达的新版本：在暂停 / 停止 / 自然结束等应用时机再采纳（SPEC-STATE-07）。 */
-  private pendingTune: TuneObject | undefined;
-  private hasPendingUpdate = false;
   private phase: PlaybackPhase = 'idle';
   private statusKey: string | null = null;
   /** 当前曲目的音频缓冲已生成完毕，可直接 start()（"已准备资源可复用"，SPEC-PLAY-01）。 */
@@ -78,20 +75,12 @@ export class PlaybackController {
     return { phase: this.phase, statusKey: this.statusKey };
   }
 
-  /** 渲染成功后的曲目更新；尚未渲染出曲目（undefined）时清空，不残留已失效版本。 */
+  /** 采用渲染后的曲目（应用时机的换版，SPEC-STATE-07）；尚未渲染出曲目（undefined）时清空，不残留已失效版本。 */
   setTune(tune: TuneObject | undefined): void {
     if (tune === this.tune) {
       return;
     }
-    if (this.phase === 'playing') {
-      // 播放期间的内容更新：保留当前播放快照，标记待应用（SPEC-STATE-07）
-      this.pendingTune = tune;
-      this.hasPendingUpdate = true;
-      this.statusKey = 'update-pending';
-      this.onChange();
-      return;
-    }
-    // 空闲 / 暂停 / 准备中：取消进行中的准备，立即采用新版本（旧任务完成不得发声）
+    // 换版归零：取消进行中的准备（旧任务完成不得发声），丢弃旧合成器与位置
     this.invalidateTask();
     this.adoptTune(tune);
     this.onChange();
@@ -134,11 +123,7 @@ export class PlaybackController {
     if (instance !== undefined) {
       instance.stop(); // 立即停音；abcjs 内部清掉暂停位置，下次从开头开始
     }
-    if (this.hasPendingUpdate) {
-      this.applyPendingUpdate();
-    } else {
-      this.statusKey = null;
-    }
+    this.statusKey = null;
     this.onChange();
   }
 
@@ -187,10 +172,6 @@ export class PlaybackController {
     }
     this.phase = 'paused'; // 先改相位：pause() 内部停源触发的 ended 不算自然结束
     instance.pause();
-    if (this.hasPendingUpdate) {
-      // 暂停即统一应用更新并归零（SPEC-STATE-07）
-      this.applyPendingUpdate();
-    }
     this.onChange();
   }
 
@@ -202,20 +183,11 @@ export class PlaybackController {
     this.onChange();
   }
 
-  private applyPendingUpdate(): void {
-    const next = this.pendingTune;
-    this.hasPendingUpdate = false;
-    this.pendingTune = undefined;
-    this.adoptTune(next); // 归零：丢弃旧合成器与位置，下次播放从头准备
-  }
-
   /** 采用新曲目：丢弃旧合成器与位置（归零），空闲等待下次明确播放。 */
   private adoptTune(tune: TuneObject | undefined): void {
     this.synthInstance = undefined;
     this.prepared = false;
     this.tune = tune;
-    this.hasPendingUpdate = false;
-    this.pendingTune = undefined;
     this.phase = 'idle';
     this.statusKey = null;
   }
@@ -395,11 +367,7 @@ export class PlaybackController {
       return; // 手动停止 / 暂停触发的 ended：状态已在对应方法处理
     }
     this.phase = 'idle';
-    if (this.hasPendingUpdate) {
-      this.applyPendingUpdate(); // 自然结束也是统一应用更新的时机（SPEC-STATE-07）
-    } else {
-      this.statusKey = null;
-    }
+    this.statusKey = null;
     this.onChange();
   }
 }

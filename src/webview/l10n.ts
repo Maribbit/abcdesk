@@ -17,7 +17,10 @@ const EN: Record<string, string> = {
   'click-to-play': 'Click the preview to start playback',
   'prepare-timeout': 'Audio preparation timed out. Play again to retry.',
   'audio-failed': 'Audio preparation failed. Play again to retry.',
-  'update-pending': 'File updated — will apply when paused',
+  'update-pending': 'File updated — pause to apply and reset the position',
+  'stale-score': 'The latest content cannot be previewed; the score below is an older version, for reference only.',
+  'empty-file': 'The file has no music content yet.',
+  'reveal-source': 'Go to source',
   'no-notes': 'The score has no playable notes.',
 };
 
@@ -32,7 +35,10 @@ const ZH_CN: Record<string, string> = {
   'click-to-play': '点击预览开始播放',
   'prepare-timeout': '音频准备超时，可重新播放。',
   'audio-failed': '音频准备失败，可重新播放。',
-  'update-pending': '文件已更新，暂停后应用',
+  'update-pending': '文件已更新，暂停后应用并重置位置',
+  'stale-score': '最新内容暂不可预览；下方为旧版本，仅供参考。',
+  'empty-file': '文件尚无音乐内容',
+  'reveal-source': '转到源码编辑',
   'no-notes': '乐谱中没有可播放的音符。',
 };
 
