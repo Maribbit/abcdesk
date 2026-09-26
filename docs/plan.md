@@ -7,7 +7,7 @@
 ## 现状
 
 - D0 设计收口：设计清单与项目计划已冻结为 `docs/archive/` 副本（仅追溯，不具规范性）。
-- 仓库初始化完成：manifest（8 命令 + 唯一设置）、工具链、规格↔测试双向绑定；CMD、ENV、LIFE、STATE 域规格已蒸馏。
+- 仓库初始化完成：manifest（8 命令 + 唯一设置）、工具链、规格↔测试双向绑定；CMD、ENV、LIFE、STATE、DOC、SET、PLAY、PERF、EXP、L10N、A11Y 域规格已蒸馏（全部 11 域完成）。
 - 骨架不含任何命令行为实现；M0 spike 尚未开始。
 
 ## 里程碑
@@ -15,7 +15,7 @@
 | 阶段 | 目的 | 出口标准（浓缩） | 相关 spec 域 |
 | --- | --- | --- | --- |
 | D0 设计 | 最小决策集 | 已收口（见 archive） | — |
-| M0 技术 spike | 验证渲染 / 播放 / 联动 / 伴奏与平台坑 | archive 计划 §7 验证清单全绿 | CMD、ENV、LIFE、DOC、STATE、PERF |
+| M0 技术 spike | 验证渲染 / 播放 / 联动 / 伴奏与平台坑 | archive 计划 §7 验证清单全绿 | CMD、ENV、LIFE、DOC、SET、PLAY、STATE、PERF、EXP、L10N、A11Y |
 | M1 工作台 MVP | L2 保底交付物 | P0 工作台项在浅 / 深 / 高对比度主题与多宽高布局下可用；自有 UI 中英覆盖与回退；性能保护与取消验收 | LIFE、SET、PLAY、EXP、L10N、A11Y |
 | M2 学习循环原型 | L1 实验载体 | 端到端练习脚本完整走通，含跨会话续接 | DOC、LIFE |
 | M3 连续自用实验 | 验证学习价值 | 观察表记录，给出分支判定 | — |
@@ -27,8 +27,7 @@
 骨架就绪后的工作次序：
 
 1. 澄清 G01（M0 / M1 验收边界）——阻断里程碑判定，不阻断规格补全。
-2. 其余 spec 域按序补全蒸馏（每域：先补条目并注明依据，同步绑定测试或占位，再进入实现）：
-   DOC → SET → PLAY → PERF → EXP → L10N → A11Y（ENV、LIFE、STATE 已蒸馏）
+2. spec 域补全蒸馏：已完成（CMD、ENV、LIFE、STATE、DOC、SET、PLAY、PERF、EXP、L10N、A11Y 全部 11 域）。
 3. M0 spike 按 archive 计划 §7 清单执行；实测值与结论回填本文件（E02）与对应 spec 条目。
 
 ### M0 spike 范围（对齐 archive 计划 §7）
