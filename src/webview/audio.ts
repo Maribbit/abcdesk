@@ -1,11 +1,21 @@
-import { synth, type MidiBuffer, type NoteMapTrack, type SynthOptions, type TuneObject } from 'abcjs';
+import {
+  synth,
+  TimingCallbacks,
+  type MidiBuffer,
+  type NoteMapTrack,
+  type NoteTimingEvent,
+  type SynthOptions,
+  type TuneObject,
+} from 'abcjs';
 
 /**
- * 播放引擎（SPEC-PLAY-01 / 02 / 03 / 14、SPEC-STATE-04 / 07、SPEC-PERF-06、SPEC-ENV-07）：
+ * 播放引擎（SPEC-PLAY-01 / 02 / 03 / 11 / 12 / 14、SPEC-STATE-04 / 07、SPEC-PERF-06、SPEC-ENV-07）：
  * - 先渲染谱面，首次明确播放才准备音频；准备成功后直接执行这次仍有效的请求，无需再点一次；
  * - 准备期间再次播放 / 暂停（含隐藏与预览接替触发的暂停）取消起播，晚到完成一律不得发声；
  * - 停止立即停音并回到开头；暂停保留位置；已准备资源可复用（本类合成器 + abcjs 内部音色缓存）；
  * - 内容更新的缓存与统一应用时机由 main 协调（SPEC-STATE-07）；本类经 setTune 采用新曲目并归零；
+ * - 演奏时序（TimingCallbacks）与音频同源同时启动：事件回调供 main 更新播放高亮，
+ *   setProgress + seek 成对完成定位（SPEC-PLAY-11 / 12；官方 SynthController 同款同步方式）；
  * - 浏览器要求用户与预览交互后才能恢复音频设备：未交互时提示"点击预览开始播放"、
  *   不因等待报超时，首次交互后自动继续仍然有效的起播（SPEC-PLAY-14）；
  * - 首版仅钢琴音色：所有乐器指令统一为钢琴，绝不触发 abcjs 默认远程音色地址（SPEC-ENV-07）。
@@ -41,11 +51,16 @@ interface PrepareTask {
 export class PlaybackController {
   private readonly soundfontUrl: string | undefined;
   private readonly onChange: () => void;
+  private readonly onTimeline: (event: NoteTimingEvent | null) => void;
   private readonly synthOptions: SynthOptions;
   private synthInstance: MidiBuffer | undefined;
   private tune: TuneObject | undefined;
   private phase: PlaybackPhase = 'idle';
   private statusKey: string | null = null;
+  /** 当前曲目的演奏时序（SPEC-PLAY-11 / 12）：播放高亮与定位映射共同依据；换版时重建。 */
+  private timer: TimingCallbacks | undefined;
+  /** 待提交的起播定位（毫秒，SPEC-PLAY-12）：准备完成后从该位置起播；取消 / 换版时丢弃。 */
+  private pendingStartMs: number | undefined;
   /** 当前曲目的音频缓冲已生成完毕，可直接 start()（"已准备资源可复用"，SPEC-PLAY-01）。 */
   private prepared = false;
   /** 任务代次：取消 / 接替 / 换版 / 超时后递增，晚到的准备完成按此丢弃（SPEC-PLAY-01）。 */
@@ -61,9 +76,14 @@ export class PlaybackController {
   private gestureRecoveryTimer: number | undefined;
   private gestureUnlock: (() => void) | undefined;
 
-  constructor(options: { soundfontUrl?: string }, onChange: () => void) {
+  constructor(
+    options: { soundfontUrl?: string },
+    onChange: () => void,
+    onTimeline: (event: NoteTimingEvent | null) => void,
+  ) {
     this.soundfontUrl = options.soundfontUrl;
     this.onChange = onChange;
+    this.onTimeline = onTimeline;
     this.synthOptions = {
       soundFontUrl: this.soundfontUrl,
       sequenceCallback: forcePianoInstrument,
@@ -75,6 +95,11 @@ export class PlaybackController {
     return { phase: this.phase, statusKey: this.statusKey };
   }
 
+  /** 当前曲目的演奏时序事件（供 main 构建字符↔音符映射，SPEC-PLAY-11 / 12）；无渲染曲目时为空。 */
+  getTimings(): NoteTimingEvent[] {
+    return this.timer?.noteTimings ?? [];
+  }
+
   /** 采用渲染后的曲目（应用时机的换版，SPEC-STATE-07）；尚未渲染出曲目（undefined）时清空，不残留已失效版本。 */
   setTune(tune: TuneObject | undefined): void {
     if (tune === this.tune) {
@@ -84,6 +109,36 @@ export class PlaybackController {
     this.invalidateTask();
     this.adoptTune(tune);
     this.onChange();
+  }
+
+  /**
+   * 从指定毫秒起播（"从此处播放"，SPEC-PLAY-12）：与普通播放共用准备、取消与接替规则；
+   * 播放中执行时为内部重建后继续（SPEC-PLAY-02），不算用户暂停、不重新准备。
+   */
+  playFromMs(milliseconds: number): void {
+    if (this.tune === undefined) {
+      return;
+    }
+    switch (this.phase) {
+      case 'idle':
+      case 'paused':
+        if (this.prepared && this.synthInstance !== undefined) {
+          this.startSound(milliseconds);
+        } else {
+          this.pendingStartMs = milliseconds;
+          this.beginPrepare();
+        }
+        break;
+      case 'preparing':
+        // 新的显式定位请求接替仍在准备的请求：旧目标不提交（SPEC-PLAY-01）
+        this.cancelPrepare();
+        this.pendingStartMs = milliseconds;
+        this.beginPrepare();
+        break;
+      case 'playing':
+        this.seekTo(milliseconds);
+        break;
+    }
   }
 
   /** 播放 / 暂停切换（按钮、命令与预览局部空格共用操作规则，SPEC-CMD-11）。 */
@@ -118,12 +173,15 @@ export class PlaybackController {
   /** 停止：取消起播、立即停音、回到开头（SPEC-PLAY-03 / CMD-10）。 */
   stop(): void {
     this.invalidateTask();
+    this.pendingStartMs = undefined;
     const instance = this.synthInstance;
     this.phase = 'idle'; // 先改相位：随后触发的 ended 事件不算自然结束
     if (instance !== undefined) {
       instance.stop(); // 立即停音；abcjs 内部清掉暂停位置，下次从开头开始
     }
+    this.timer?.stop(); // 演奏时序归零，下次播放从头回调（SPEC-PLAY-03）
     this.statusKey = null;
+    this.onTimeline(null); // 停止清除播放高亮（SPEC-PLAY-11）
     this.onChange();
   }
 
@@ -135,6 +193,8 @@ export class PlaybackController {
     this.synthInstance = undefined;
     this.prepared = false;
     this.phase = 'idle';
+    this.timer?.stop();
+    this.timer = undefined;
     if (instance !== undefined) {
       try {
         instance.stop();
@@ -155,14 +215,51 @@ export class PlaybackController {
     this.beginPrepare();
   }
 
-  private startSound(): void {
-    if (this.synthInstance === undefined) {
+  /**
+   * 开始播放（SPEC-PLAY-01 / 02）：可选从指定毫秒起播（SPEC-PLAY-12）。
+   * 播放中 seek 由音频层内部停源并重启，不得再调 start()（M0 实测：会双重发声）。
+   */
+  private startSound(startMs?: number): void {
+    const instance = this.synthInstance;
+    if (instance === undefined) {
       return;
     }
     this.phase = 'playing';
-    this.synthInstance.start();
+    if (startMs !== undefined) {
+      const wasRunning = instance.getIsRunning();
+      instance.seek(startMs / 1000, 'seconds');
+      if (!wasRunning) {
+        // 非运行状态：seek 只记录位置，需显式开始
+        instance.start();
+      }
+    } else {
+      instance.start();
+    }
+    this.syncTimer(startMs);
     this.statusKey = null;
     this.onChange();
+  }
+
+  /** 播放中定位（SPEC-PLAY-02 / 05）：音频内部重建后从新位置继续，演奏时序同步校正。 */
+  private seekTo(milliseconds: number): void {
+    const instance = this.synthInstance;
+    if (instance === undefined) {
+      return;
+    }
+    instance.seek(milliseconds / 1000, 'seconds');
+    this.timer?.setProgress(milliseconds / 1000, 'seconds');
+  }
+
+  /** 同步演奏时序（SPEC-PLAY-11）：先按定位目标校正进度，再启动；与音频同源同时。 */
+  private syncTimer(startMs: number | undefined): void {
+    const timer = this.timer;
+    if (timer === undefined) {
+      return;
+    }
+    if (startMs !== undefined) {
+      timer.setProgress(startMs / 1000, 'seconds');
+    }
+    timer.start();
   }
 
   private pauseInternal(): void {
@@ -172,24 +269,47 @@ export class PlaybackController {
     }
     this.phase = 'paused'; // 先改相位：pause() 内部停源触发的 ended 不算自然结束
     instance.pause();
+    this.timer?.pause();
     this.onChange();
   }
 
   private cancelPrepare(): void {
-    // 取消起播：保留最后已提交位置（准备不提交新位置，位置保持原值）
+    // 取消起播：保留最后已提交位置（准备不提交新位置，待准备的定位目标一并丢弃）
     this.invalidateTask();
+    this.pendingStartMs = undefined;
     this.phase = 'idle';
     this.statusKey = null;
     this.onChange();
   }
 
-  /** 采用新曲目：丢弃旧合成器与位置（归零），空闲等待下次明确播放。 */
+  /** 采用新曲目：丢弃旧合成器、旧时序与位置（归零），空闲等待下次明确播放。 */
   private adoptTune(tune: TuneObject | undefined): void {
     this.synthInstance = undefined;
     this.prepared = false;
     this.tune = tune;
     this.phase = 'idle';
     this.statusKey = null;
+    this.pendingStartMs = undefined;
+    this.timer?.stop(); // 旧版本时序停止（换版归零）
+    this.timer = tune === undefined ? undefined : this.createTimer(tune);
+    this.onTimeline(null); // 换版清除播放高亮（新谱面由 main 重建映射，SPEC-PLAY-11）
+  }
+
+  /** 创建当前曲目的演奏时序（SPEC-PLAY-11 / 12）：事件回调交给 main 更新播放高亮。 */
+  private createTimer(tune: TuneObject): TimingCallbacks | undefined {
+    try {
+      return new TimingCallbacks(tune, {
+        eventCallback: (event) => {
+          this.onTimeline(event);
+          // 返回 undefined：结束时允许时序自停（返回 "continue" 才会续播，SPEC-PLAY-03 非循环自然结束）
+          return undefined;
+        },
+      });
+    } catch (error) {
+      // 时序不可用：不阻断渲染与播放，仅无播放高亮（映射缺失由 main 按不可用处理）
+      console.error('ABC Desk: timing callbacks setup failed', error);
+      return undefined;
+    }
   }
 
   /** 递增任务代次并清理任务标记与计时器：旧准备的完成不再产生任何影响。 */
@@ -338,13 +458,17 @@ export class PlaybackController {
         if (result.status === 'empty') {
           // 没有可发声的音符：保持空闲，不进入播放（SPEC-STATE-05）
           this.phase = 'idle';
+          this.pendingStartMs = undefined;
           this.statusKey = 'no-notes';
           this.onChange();
           return;
         }
         this.synthInstance = instance;
         this.prepared = true;
-        this.startSound(); // 成功后直接执行这次仍有效的请求，无需再点一次（SPEC-PLAY-01）
+        // 成功后执行这次仍有效的请求，无需再点一次（SPEC-PLAY-01）；普通播放不携带定位目标
+        const startMs = this.pendingStartMs;
+        this.pendingStartMs = undefined;
+        this.startSound(startMs);
       })
       .catch((error: unknown) => {
         if (generation !== this.taskGeneration) {
@@ -361,13 +485,14 @@ export class PlaybackController {
       });
   }
 
-  /** 自然结束（非循环）：停音回到可播放状态；位置与再次播放语义待 P01，不补造默认。 */
+  /** 自然结束（非循环）：停音回到可播放状态并清除播放高亮；位置与再次播放语义待 P01，不补造默认。 */
   private handleEnded(): void {
     if (this.phase !== 'playing') {
       return; // 手动停止 / 暂停触发的 ended：状态已在对应方法处理
     }
     this.phase = 'idle';
     this.statusKey = null;
+    this.onTimeline(null);
     this.onChange();
   }
 }

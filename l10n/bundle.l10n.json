@@ -1,5 +1,10 @@
 {
   "Command {0} is not implemented yet.": "Command {0} is not implemented yet.",
   "No ABC target is available.": "No ABC target is available.",
-  "{0} (Unsaved)": "{0} (Unsaved)"
+  "{0} (Unsaved)": "{0} (Unsaved)",
+  "Select a note in the preview first.": "Select a note in the preview first.",
+  "No note matches the current position.": "No note matches the current position.",
+  "The file has unapplied changes; pause first to apply them.": "The file has unapplied changes; pause first to apply them.",
+  "The preview shows an older version of the score, so it cannot be used.": "The preview shows an older version of the score, so it cannot be used.",
+  "The source document is unavailable.": "The source document is unavailable."
 }

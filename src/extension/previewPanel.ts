@@ -2,25 +2,35 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import {
   parseWebviewMessage,
+  type CursorMessage,
   type DocumentMessage,
+  type LinkageUnavailableReason,
   type PlaybackMessage,
+  type PlayFromCursorMessage,
+  type SourceHighlightRange,
   type WebviewPlaybackStateMessage,
   type WebviewRenderedMessage,
+  type WebviewRevealRangeMessage,
 } from '../core/messages';
 
 /**
- * 音乐预览面板管理（SPEC-CMD-03 / 06 / 07 / 09 / 10、SPEC-ENV-03 / 04 / 05、SPEC-PLAY-01 / 02）：
+ * 音乐预览面板管理（SPEC-CMD-03 / 06 / 07 / 09 / 10 / 12、SPEC-ENV-03 / 04 / 05、SPEC-PLAY-01 / 02 / 11）：
  * - 同一文档复用已有面板，不重复创建（SPEC-CMD-03）；
  * - webview 资源仅经 asWebviewUri 加载，CSP 只放行 nonce 自有脚本与扩展自有资源（SPEC-ENV-03 / 05）；
  * - 不信任 webview 消息，经 parseWebviewMessage 按类型与版本校验（SPEC-ENV-04）；
  * - 文档变化（含未保存修改）经防抖推送到对应预览；标题与状态行标明尚未保存的新文档（SPEC-CMD-06）；
  * - 播放中的换版与应用时机由 webview 按 SPEC-STATE-07 执行，宿主只负责推送最新版本；
  * - 播放类命令可按需显示预览并保留源码焦点，首次渲染成功后仅执行仍有效的起播请求（SPEC-CMD-07 / 09）；
+ * - 文档变化到新版本渲染确认之间停用源码联动：不推送光标、不定位、不起播，并清除源码高亮（SPEC-PLAY-11）；
+ * - 点击谱面音符的源码定位只设选区与滚动、不抢焦点，编辑器侧以专用轮廓标记呈现该片段（与原生选区、同文高亮双重区分）；播放高亮只对可见编辑器设装饰（SPEC-PLAY-11）；
  * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
- * - 空状态的"转到源码编辑"入口打开来源文档并转移焦点（SPEC-STATE-05）。
+ * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点（SPEC-STATE-05 / CMD-12）。
  *
- * 键盘可视化与源码联动等行为由后续批次接入（见 docs/spec/play.md、state.md）。
+ * 键盘可视化等行为由后续批次接入（见 docs/spec/play.md、state.md）。
  */
+
+/** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）。 */
+type PendingRequest = { kind: 'toggle' } | { kind: 'play-from-cursor'; offset: number };
 
 /** 面板条目：面板本身与宿主侧需要核验的最小状态。 */
 interface PanelEntry {
@@ -33,8 +43,16 @@ interface PanelEntry {
   version: number;
   /** 是否已收到过渲染结果（播放类命令据此决定立即转发还是等待渲染）。 */
   renderedOnce: boolean;
-  /** 待首次渲染完成后转发的起播请求（SPEC-CMD-07 / 09）。 */
-  pendingToggle: boolean;
+  /** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）；取消或渲染失败时丢弃。 */
+  pendingRequest: PendingRequest | undefined;
+  /** 联动停用窗口（SPEC-PLAY-11）：文档已变化、新版本尚未渲染确认；期间不推送光标、不定位、不起播。 */
+  suspend: boolean;
+  /** 联动停用期间记录的最新光标偏移，渲染完成后补发（SPEC-PLAY-11）。 */
+  lastCursorOffset: number | undefined;
+  /** 防抖期间待推送的最新文档（SPEC-CMD-06）。 */
+  pendingChange: vscode.TextDocument | undefined;
+  /** 最近一次点击谱面音符的源码区间（SPEC-CMD-12 定位依据）；内容变化时清除，不套用旧偏移。 */
+  lastNoteRange: { start: number; end: number } | undefined;
 }
 
 /** 文档更新推送防抖（毫秒）：连续输入只在稳定后推送一次最新版本。 */
@@ -45,8 +63,29 @@ export class PreviewPanelManager implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   /** 各文档待推送的防抖计时器（按 URI 键控）。 */
   private readonly updateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 源码播放高亮装饰（SPEC-PLAY-11）：只对可见编辑器设置，不滚动、不移动光标。 */
+  private readonly sourceHighlight = vscode.window.createTextEditorDecorationType({
+    backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+    overviewRulerColor: new vscode.ThemeColor('editor.findMatchHighlightBorder'),
+  });
+  /**
+   * 点击谱面音符的联动轮廓标记（SPEC-PLAY-11）：描边 + 概览标尺刻度，
+   * 与原生选区（圆角填充）和 VS Code 同文高亮（灰盒）以形状与颜色双重区分；
+   * 由各文档最近一次点击的区间（lastNoteRange）驱动，新点击替换、内容变化清除。
+   */
+  private readonly linkedNote = vscode.window.createTextEditorDecorationType({
+    border: '1px dashed',
+    borderColor: new vscode.ThemeColor('editorInfo.foreground'),
+    overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.infoForeground'),
+    overviewRulerLane: vscode.OverviewRulerLane.Center,
+  });
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(private readonly extensionUri: vscode.Uri) {
+    // 可见编辑器变化时同步轮廓标记（SPEC-PLAY-11）：新可见的编辑器按最近一次点击区间重绘
+    this.disposables.push(
+      vscode.window.onDidChangeVisibleTextEditors(() => this.syncLinkedDecorations()),
+    );
+  }
 
   /** 创建或显示给定文档的预览；同文件已有预览时显示并推送最新内容（只显示，不起播）。 */
   createOrShow(document: vscode.TextDocument): void {
@@ -64,7 +103,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     const entry = this.panels.get(document.uri.toString());
     if (entry === undefined) {
       // 按需创建：待首次渲染完成后执行仍有效的起播请求（SPEC-CMD-07）
-      this.createPanel(document, true);
+      this.createPanel(document, { kind: 'toggle' });
       return;
     }
     if (!entry.panel.visible) {
@@ -72,11 +111,77 @@ export class PreviewPanelManager implements vscode.Disposable {
       entry.panel.reveal(undefined, true);
     }
     if (!entry.renderedOnce) {
-      entry.pendingToggle = true;
+      entry.pendingRequest = { kind: 'toggle' };
       return;
     }
-    entry.pendingToggle = false;
+    entry.pendingRequest = undefined;
     this.postPlayback(entry, 'toggle');
+  }
+
+  /**
+   * "从光标播放"命令入口（SPEC-CMD-07 / 08 / PLAY-12）：按需创建或显示预览并保留源码焦点；
+   * 起播前先推送待更新文档，保证按最新版本映射；无有效映射时由 webview 回原因说明。
+   */
+  requestPlayFromCursor(document: vscode.TextDocument, offset: number): void {
+    const entry = this.panels.get(document.uri.toString());
+    if (entry === undefined) {
+      this.createPanel(document, { kind: 'play-from-cursor', offset });
+      return;
+    }
+    if (!entry.panel.visible) {
+      entry.panel.reveal(undefined, true);
+    }
+    this.flushDocumentUpdate(entry);
+    if (!entry.renderedOnce) {
+      entry.pendingRequest = { kind: 'play-from-cursor', offset };
+      return;
+    }
+    entry.pendingRequest = undefined;
+    const message: PlayFromCursorMessage = { type: 'play-from-cursor', offset };
+    void entry.panel.webview.postMessage(message);
+  }
+
+  /** "从所选音符播放"命令入口（SPEC-CMD-08 / PLAY-12）：只取预览内的选择；预览不存在时按无选择说明。 */
+  requestPlayFromSelection(document: vscode.TextDocument): void {
+    const entry = this.panels.get(document.uri.toString());
+    if (entry === undefined) {
+      void vscode.window.showInformationMessage(
+        vscode.l10n.t('Select a note in the preview first.'),
+      );
+      return;
+    }
+    this.flushDocumentUpdate(entry);
+    void entry.panel.webview.postMessage({ type: 'play-from-selection' });
+  }
+
+  /**
+   * "转到源码编辑"命令（SPEC-CMD-12）：打开来源文档并显式转移焦点；
+   * 无有效音符映射时只打开文件、不套用旧偏移；来源不可用时说明原因。
+   */
+  async requestGoToSource(document: vscode.TextDocument): Promise<void> {
+    const entry = this.panels.get(document.uri.toString());
+    const range = entry?.lastNoteRange;
+    try {
+      const editor = await vscode.window.showTextDocument(document, {
+        viewColumn: vscode.ViewColumn.One,
+        preview: false,
+        preserveFocus: false,
+      });
+      if (range === undefined) {
+        return;
+      }
+      const selection = new vscode.Selection(
+        document.positionAt(range.start),
+        document.positionAt(range.end),
+      );
+      editor.selection = selection;
+      editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    } catch (error) {
+      console.error('ABC Desk: go to source failed', error);
+      void vscode.window.showInformationMessage(
+        vscode.l10n.t('The source document is unavailable.'),
+      );
+    }
   }
 
   /** 停止命令入口（SPEC-CMD-10 / 11）：不新建预览；停音与取消起播不因音频未就绪失效。 */
@@ -85,7 +190,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (entry === undefined) {
       return;
     }
-    entry.pendingToggle = false;
+    entry.pendingRequest = undefined;
     this.postPlayback(entry, 'stop');
   }
 
@@ -108,6 +213,12 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (entry === undefined) {
       return;
     }
+    // 从发现内容变化起立即停用源码联动（SPEC-PLAY-11）：清除播放高亮、丢弃旧映射定位依据
+    entry.suspend = true;
+    entry.lastNoteRange = undefined;
+    this.clearSourceHighlight(entry);
+    this.syncLinkedDecorations();
+    entry.pendingChange = document;
     const existing = this.updateTimers.get(uri);
     if (existing !== undefined) {
       clearTimeout(existing);
@@ -116,14 +227,50 @@ export class PreviewPanelManager implements vscode.Disposable {
       uri,
       setTimeout(() => {
         this.updateTimers.delete(uri);
-        if (this.panels.get(uri) === entry) {
-          this.pushDocument(entry, document);
-        }
+        this.flushDocumentUpdate(entry);
       }, UPDATE_DEBOUNCE_MS),
     );
   }
 
-  private createPanel(document: vscode.TextDocument, pendingToggle = false): void {
+  /** 源码光标变化（SPEC-PLAY-11）：属于某预览的绑定文档时推送查阅标记位置；光标属于其他曲目时清除各预览的标记。 */
+  notifySelectionChanged(editor: vscode.TextEditor): void {
+    const uri = editor.document.uri.toString();
+    const entry = this.panels.get(uri);
+    if (entry !== undefined) {
+      this.sendCursor(entry, editor.document.offsetAt(editor.selection.active));
+      return;
+    }
+    // 不自动切曲、不套用当前曲目的映射（SPEC-PLAY-11）
+    for (const other of this.panels.values()) {
+      this.sendCursor(other, null);
+    }
+  }
+
+  /** 推送查阅标记位置（SPEC-PLAY-11）：停用窗口内只记录、不应用，渲染完成后补发最新位置。 */
+  private sendCursor(entry: PanelEntry, offset: number | null): void {
+    entry.lastCursorOffset = offset ?? undefined;
+    if (entry.suspend || !entry.renderedOnce) {
+      return;
+    }
+    const message: CursorMessage = { type: 'cursor', offset };
+    void entry.panel.webview.postMessage(message);
+  }
+
+  /** 立即推送待更新文档（若有）：起播命令前刷新，保证按最新版本映射（SPEC-PLAY-11 / 12）。 */
+  private flushDocumentUpdate(entry: PanelEntry): void {
+    const timer = this.updateTimers.get(entry.uri);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.updateTimers.delete(entry.uri);
+    }
+    const pending = entry.pendingChange;
+    entry.pendingChange = undefined;
+    if (pending !== undefined && this.panels.get(entry.uri) === entry) {
+      this.pushDocument(entry, pending);
+    }
+  }
+
+  private createPanel(document: vscode.TextDocument, request?: PendingRequest): void {
     const panel = vscode.window.createWebviewPanel(
       'abcdesk.preview',
       panelTitle(document),
@@ -145,11 +292,16 @@ export class PreviewPanelManager implements vscode.Disposable {
       document,
       version: document.version,
       renderedOnce: false,
-      pendingToggle,
+      pendingRequest: request,
+      // 首次渲染完成前不应用联动（SPEC-PLAY-11）
+      suspend: true,
+      lastCursorOffset: undefined,
+      pendingChange: undefined,
+      lastNoteRange: undefined,
     };
     this.panels.set(entry.uri, entry);
     panel.webview.html = this.renderHtml(panel.webview);
-    if (pendingToggle) {
+    if (request !== undefined) {
       // 播放类命令按需打开预览时不抢源码焦点（SPEC-CMD-07）
       panel.reveal(undefined, true);
     }
@@ -158,6 +310,8 @@ export class PreviewPanelManager implements vscode.Disposable {
         // 防止迟到的 dispose 回调误删同文件的新面板
         if (this.panels.get(entry.uri) === entry) {
           this.panels.delete(entry.uri);
+          // 面板关闭后轮廓标记一并清除（SPEC-PLAY-11）
+          this.syncLinkedDecorations();
         }
         const timer = this.updateTimers.get(entry.uri);
         if (timer !== undefined) {
@@ -174,7 +328,7 @@ export class PreviewPanelManager implements vscode.Disposable {
           return;
         }
         // 面板隐藏按暂停处理（SPEC-PLAY-02）；待起播请求随隐藏取消（SPEC-CMD-07）
-        entry.pendingToggle = false;
+        entry.pendingRequest = undefined;
         this.postPlayback(entry, 'pause');
       },
       undefined,
@@ -195,8 +349,33 @@ export class PreviewPanelManager implements vscode.Disposable {
           this.handleRendered(entry, parsed);
           return;
         }
+        if (parsed.type === 'play-from-selection-request') {
+          // 预览控制区"从此处播放"（SPEC-PLAY-12）：与命令共用路径（先刷新待更新文档再映射）
+          this.requestPlayFromSelection(entry.document);
+          return;
+        }
         if (parsed.type === 'reveal-source') {
           this.revealSource(entry);
+          return;
+        }
+        if (parsed.type === 'reveal-range') {
+          if (entry.suspend) {
+            // 停用窗口：忽略旧谱面→旧源码的定位（SPEC-PLAY-11）
+            return;
+          }
+          this.revealRange(entry, parsed);
+          return;
+        }
+        if (parsed.type === 'linkage-unavailable') {
+          this.showLinkageUnavailable(parsed.reason);
+          return;
+        }
+        if (parsed.type === 'source-highlight') {
+          if (entry.suspend) {
+            // 停用窗口：变化时已清除高亮，此处不再应用旧映射（SPEC-PLAY-11）
+            return;
+          }
+          this.applySourceHighlight(entry, parsed.ranges);
           return;
         }
         this.handlePlaybackState(entry, parsed.state);
@@ -206,21 +385,36 @@ export class PreviewPanelManager implements vscode.Disposable {
     );
   }
 
-  /** 渲染结果：版本不符丢弃；仍有效的待起播请求在首次渲染成功后执行（SPEC-CMD-07 / 09）。 */
+  /**
+   * 渲染结果：版本不符丢弃；解除联动停用并补发停用期间的最新光标；
+   * 仍有效的待起播请求在首次渲染成功后执行（SPEC-CMD-07 / 09、PLAY-11）。
+   */
   private handleRendered(entry: PanelEntry, message: WebviewRenderedMessage): void {
     if (message.version !== entry.version) {
       return;
     }
     entry.renderedOnce = true;
-    if (!entry.pendingToggle) {
+    // 新版本已在预览侧落地：解除联动停用（SPEC-PLAY-11）
+    entry.suspend = false;
+    if (entry.lastCursorOffset !== undefined) {
+      const cursor: CursorMessage = { type: 'cursor', offset: entry.lastCursorOffset };
+      void entry.panel.webview.postMessage(cursor);
+    }
+    const request = entry.pendingRequest;
+    if (request === undefined) {
       return;
     }
-    entry.pendingToggle = false;
+    entry.pendingRequest = undefined;
     // 渲染失败时没有可起播的曲目，丢弃该请求；只执行仍有效且成功的请求（SPEC-CMD-07）
     if (!message.ok || !entry.panel.visible) {
       return;
     }
-    this.postPlayback(entry, 'toggle');
+    if (request.kind === 'toggle') {
+      this.postPlayback(entry, 'toggle');
+      return;
+    }
+    const playFrom: PlayFromCursorMessage = { type: 'play-from-cursor', offset: request.offset };
+    void entry.panel.webview.postMessage(playFrom);
   }
 
   /** 同一窗口内只允许一处预览发声：任一面板起播时暂停其他面板（SPEC-PLAY-01）。 */
@@ -247,6 +441,90 @@ export class PreviewPanelManager implements vscode.Disposable {
       preview: false,
       preserveFocus: false,
     });
+  }
+
+  /**
+   * 点击谱面音符的源码定位（SPEC-PLAY-11）：设置选区并滚动可见，焦点留在预览、不改变播放位置；
+   * 源码不可见时显示但不抢焦点；记录区间供 goToSource 复用。
+   */
+  private revealRange(entry: PanelEntry, message: WebviewRevealRangeMessage): void {
+    const document = vscode.workspace.textDocuments.find(
+      (candidate) => candidate.uri.toString() === entry.uri,
+    );
+    if (document === undefined) {
+      return;
+    }
+    entry.lastNoteRange = { start: message.start, end: message.end };
+    // 专用轮廓标记与选区一同呈现（SPEC-PLAY-11）：与原生选区填充、同文灰影形状与颜色双重区分
+    this.syncLinkedDecorations();
+    // active 端取音符起点：选区变化回传的光标偏移据此落在同一音符上（SPEC-PLAY-11）
+    const selection = new vscode.Selection(
+      document.positionAt(message.end),
+      document.positionAt(message.start),
+    );
+    const editor = vscode.window.visibleTextEditors.find(
+      (candidate) => candidate.document.uri.toString() === entry.uri,
+    );
+    if (editor !== undefined) {
+      editor.selection = selection;
+      editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      return;
+    }
+    void vscode.window.showTextDocument(document, {
+      viewColumn: vscode.ViewColumn.One,
+      preview: false,
+      preserveFocus: true, // 点击谱面不转移焦点（SPEC-PLAY-11）
+      selection,
+    });
+  }
+
+  /** 联动不可用的原因说明（SPEC-PLAY-11 / 12）：不静默失败，不悄悄从头播放。 */
+  private showLinkageUnavailable(reason: LinkageUnavailableReason): void {
+    void vscode.window.showInformationMessage(linkageUnavailableText(reason));
+  }
+
+  /** 源码播放高亮（SPEC-PLAY-11）：只对可见编辑器设装饰，不滚动、不移动光标、不因播放打开已关闭的源码页。 */
+  private applySourceHighlight(entry: PanelEntry, ranges: SourceHighlightRange[]): void {
+    const editor = vscode.window.visibleTextEditors.find(
+      (candidate) => candidate.document.uri.toString() === entry.uri,
+    );
+    if (editor === undefined) {
+      return;
+    }
+    const document = editor.document;
+    const decorations = ranges.map((range) => ({
+      range: new vscode.Range(document.positionAt(range.start), document.positionAt(range.end)),
+    }));
+    editor.setDecorations(this.sourceHighlight, decorations);
+  }
+
+  /** 清除源码播放高亮（SPEC-PLAY-11）：文档变化或换版时立即停用旧映射的显示。 */
+  private clearSourceHighlight(entry: PanelEntry): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.uri.toString() === entry.uri) {
+        editor.setDecorations(this.sourceHighlight, []);
+      }
+    }
+  }
+
+  /**
+   * 按各文档最近一次点击的区间同步轮廓标记（SPEC-PLAY-11）：只作用于可见编辑器，
+   * 无区间（未点击 / 内容已变化 / 面板已关闭）时清除。
+   */
+  private syncLinkedDecorations(): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      const range = this.panels.get(editor.document.uri.toString())?.lastNoteRange;
+      const decorations =
+        range === undefined
+          ? []
+          : [
+              new vscode.Range(
+                editor.document.positionAt(range.start),
+                editor.document.positionAt(range.end),
+              ),
+            ];
+      editor.setDecorations(this.linkedNote, decorations);
+    }
   }
 
   private pushDocument(entry: PanelEntry, document: vscode.TextDocument): void {
@@ -316,7 +594,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       padding: 6px 12px;
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
-    #controls button, #content-status button {
+    #controls button, #content-status button, #follow-resume {
       font: inherit;
       padding: 4px 10px;
       color: var(--vscode-button-foreground);
@@ -325,7 +603,22 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 2px;
       cursor: pointer;
     }
-    #controls button:hover, #content-status button:hover { background: var(--vscode-button-hoverBackground); }
+    #controls button:hover, #content-status button:hover, #follow-resume:hover { background: var(--vscode-button-hoverBackground); }
+    /* "从此处播放"（SPEC-PLAY-12）：禁用原因由包裹元素承载（禁用按钮自身不触发悬停提示） */
+    #play-from-here-wrap { display: inline-flex; }
+    #controls button:disabled {
+      opacity: 0.5;
+      cursor: default;
+      background: var(--vscode-button-background);
+    }
+    /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，控制区滚出视口后仍可操作 */
+    #follow-resume {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    }
+    #follow-resume[hidden] { display: none; }
     #playback-status { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
     /* 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 待更新提示，位于控制区下方 */
     #content-status {
@@ -339,8 +632,23 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     #content-status[hidden] { display: none; }
     /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线 */
-    #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; }
+    #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; position: relative; }
     #score svg { display: block; }
+    /*
+     * 谱面联动标记（SPEC-PLAY-11）：形状与颜色双重区分——
+     * 查阅 / 点选为音符包围虚线框（覆盖层，不进入 SVG、不阻断点击命中），播放高亮为音符填充换色；两类标记可共存。
+     * CSS 类规则优先于 abcjs 写入的 presentation 属性，覆盖色随类移除即还原，无需保存还原簿记。
+     */
+    #score .abcdesk-reading-box {
+      position: absolute;
+      box-sizing: border-box;
+      border: 1.5px dashed #1a73e8;
+      border-radius: 3px;
+      pointer-events: none;
+    }
+    /* 点选填充覆盖 abcjs 原生亮红（#ff0000）：与包围框同族；播放高亮规则保持在后（同优先级时后写生效） */
+    #score .abcjs-note_selected { fill: #8ab4f8; }
+    #score .abcdesk-playing { fill: #d84315; }
   </style>
 </head>
 <body>
@@ -348,6 +656,7 @@ export class PreviewPanelManager implements vscode.Disposable {
   <div id="controls">
     <button id="play" type="button"></button>
     <button id="stop" type="button"></button>
+    <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
     <span id="playback-status" role="status" aria-live="polite"></span>
   </div>
   <div id="content-status" role="status" aria-live="polite" hidden>
@@ -355,6 +664,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     <button id="reveal-source" type="button" hidden></button>
   </div>
   <div id="score"></div>
+  <button id="follow-resume" type="button" hidden></button>
   <script nonce="${nonce}">window.__abcdesk = { soundfontUrl: ${JSON.stringify(soundfontUrl)} };</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -370,6 +680,8 @@ export class PreviewPanelManager implements vscode.Disposable {
       clearTimeout(timer);
     }
     this.updateTimers.clear();
+    this.sourceHighlight.dispose();
+    this.linkedNote.dispose();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -386,4 +698,18 @@ function fileNameOf(document: vscode.TextDocument): string {
 function panelTitle(document: vscode.TextDocument): string {
   const fileName = fileNameOf(document);
   return document.isUntitled ? vscode.l10n.t('{0} (Unsaved)', fileName) : fileName;
+}
+
+/** 联动不可用原因的用户可见文案（SPEC-PLAY-11 / 12）。 */
+function linkageUnavailableText(reason: LinkageUnavailableReason): string {
+  switch (reason) {
+    case 'no-mapping':
+      return vscode.l10n.t('No note matches the current position.');
+    case 'no-selection':
+      return vscode.l10n.t('Select a note in the preview first.');
+    case 'update-pending':
+      return vscode.l10n.t('The file has unapplied changes; pause first to apply them.');
+    case 'stale-score':
+      return vscode.l10n.t('The preview shows an older version of the score, so it cannot be used.');
+  }
 }

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { choosePreviewTarget, type TargetCandidate } from '../core/target';
+import { choosePreviewTarget, isAbcTarget, type TargetCandidate } from '../core/target';
 import { PreviewPanelManager } from './previewPanel';
 
 /**
@@ -28,10 +28,23 @@ export function activate(context: vscode.ExtensionContext): void {
     // 播放主干（M0）：播放 / 暂停与停止（SPEC-CMD-07 / 09 / 10 / 11）。
     vscode.commands.registerCommand('abcdesk.togglePlayback', () => togglePlaybackCommand(previews)),
     vscode.commands.registerCommand('abcdesk.stop', () => stopPlaybackCommand(previews)),
+    // 源码联动（M0）：从光标播放 / 从所选音符播放 / 转到源码编辑（SPEC-CMD-07 / 08 / 12）。
+    vscode.commands.registerCommand('abcdesk.playFromCursor', () => playFromCursorCommand(previews)),
+    vscode.commands.registerCommand('abcdesk.playFromSelectedNote', () =>
+      playFromSelectedNoteCommand(previews),
+    ),
+    vscode.commands.registerCommand('abcdesk.goToSource', () => goToSourceCommand(previews)),
   );
 
   // 其余命令为骨架占位：实现前必须先补全对应规格条目并写绑定测试。
-  const implemented = new Set<string>(['abcdesk.openPreviewToSide', 'abcdesk.togglePlayback', 'abcdesk.stop']);
+  const implemented = new Set<string>([
+    'abcdesk.openPreviewToSide',
+    'abcdesk.togglePlayback',
+    'abcdesk.stop',
+    'abcdesk.playFromCursor',
+    'abcdesk.playFromSelectedNote',
+    'abcdesk.goToSource',
+  ]);
   for (const id of COMMAND_IDS) {
     if (implemented.has(id)) {
       continue;
@@ -48,6 +61,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
       previews.notifyDocumentChanged(event.document);
+    }),
+    // 源码光标移动推送到对应预览（SPEC-PLAY-11）：停止 / 暂停时突出映射音符并滚动，
+    // 播放中只更新查阅标记；光标离开绑定文档时清除各预览的标记。
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      previews.notifySelectionChanged(event.textEditor);
     }),
   );
 }
@@ -114,6 +132,47 @@ function stopPlaybackCommand(previews: PreviewPanelManager): void {
 }
 
 /**
+ * "从光标播放"命令（SPEC-CMD-07 / 08）：只取当前 ABC 源码编辑器的光标；
+ * 可靠确定曲目与音符时显式跨曲起播，按需打开对应预览并保留源码焦点；
+ * 无有效源码目标时不回退、不弹选择器（SPEC-CMD-05）。
+ */
+function playFromCursorCommand(previews: PreviewPanelManager): void {
+  const editor = vscode.window.activeTextEditor;
+  if (editor === undefined || !isAbcTarget(candidateFromDocument(editor.document))) {
+    void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
+    return;
+  }
+  const offset = editor.document.offsetAt(editor.selection.active);
+  previews.requestPlayFromCursor(editor.document, offset);
+}
+
+/**
+ * "从所选音符播放"命令（SPEC-CMD-08）：只取当前预览的有效音符选择与起播映射，
+ * 不借用一旁源码的光标；无预览内选择时由预览面板回原因说明（SPEC-PLAY-12）。
+ */
+function playFromSelectedNoteCommand(previews: PreviewPanelManager): void {
+  const document = resolveControlTarget(previews);
+  if (document === undefined) {
+    void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
+    return;
+  }
+  previews.requestPlayFromSelection(document);
+}
+
+/**
+ * "转到源码编辑"命令（SPEC-CMD-12）：目标为当前预览的来源文档并显式转移焦点；
+ * 无有效音符映射时只打开来源文件、不套用旧偏移；来源不可用时说明原因。
+ */
+function goToSourceCommand(previews: PreviewPanelManager): void {
+  const document = resolveControlTarget(previews);
+  if (document === undefined) {
+    void vscode.window.showInformationMessage(vscode.l10n.t('No ABC target is available.'));
+    return;
+  }
+  void previews.requestGoToSource(document);
+}
+
+/**
  * 控制命令的目标解析（SPEC-CMD-04 / 05）：预览在前台时使用其绑定文档，
  * 否则使用调用前的活动编辑器上下文；无目标时返回 undefined，不回退到其他文件。
  */
@@ -138,14 +197,18 @@ function candidateFromUri(uri: vscode.Uri): TargetCandidate {
   };
 }
 
+function candidateFromDocument(document: vscode.TextDocument): TargetCandidate {
+  return {
+    uri: document.uri.toString(),
+    languageId: document.languageId,
+    isUntitled: document.isUntitled,
+  };
+}
+
 function activeCandidate(): TargetCandidate | undefined {
   const editor = vscode.window.activeTextEditor;
   if (editor === undefined) {
     return undefined;
   }
-  return {
-    uri: editor.document.uri.toString(),
-    languageId: editor.document.languageId,
-    isUntitled: editor.document.isUntitled,
-  };
+  return candidateFromDocument(editor.document);
 }

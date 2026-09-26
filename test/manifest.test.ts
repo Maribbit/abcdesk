@@ -92,6 +92,17 @@ describe('package.json manifest', () => {
     expect(openPreview?.icon).toBe('$(open-preview)');
   });
 
+  it('[SPEC-CMD-16] .abc 编辑器右键菜单提供从光标播放入口，与命令面板共用同一命令', () => {
+    const menus = manifest.contributes.menus;
+
+    expect(menus['editor/context']).toHaveLength(1);
+    expect(menus['editor/context'][0]).toMatchObject({
+      command: 'abcdesk.playFromCursor',
+      when: 'resourceLangId == abc',
+      group: 'navigation',
+    });
+  });
+
   it('[SPEC-ENV-10] contributes.languages 声明 abc 语言与 .abc 扩展名', () => {
     expect(manifest.contributes.languages).toContainEqual({
       id: 'abc',

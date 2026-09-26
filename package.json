@@ -95,6 +95,13 @@
           "command": "abcdesk.openPreviewToSide",
           "when": "resourceExtname == .abc"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "abcdesk.playFromCursor",
+          "when": "resourceLangId == abc",
+          "group": "navigation"
+        }
       ]
     }
   },

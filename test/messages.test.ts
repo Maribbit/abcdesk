@@ -57,6 +57,15 @@ describe('消息桥校验（SPEC-ENV-04）', () => {
     });
   });
 
+  it('[SPEC-ENV-04] play-from-selection-request 无载荷请求：额外字段丢弃，位置与目标不由 webview 指定', () => {
+    expect(parseWebviewMessage({ type: 'play-from-selection-request' })).toEqual({
+      type: 'play-from-selection-request',
+    });
+    expect(parseWebviewMessage({ type: 'play-from-selection-request', offset: 5 })).toEqual({
+      type: 'play-from-selection-request',
+    });
+  });
+
   it('[SPEC-ENV-04] webview 侧同样校验宿主消息：document 形状完整才接受，playback 仅限三个动作', () => {
     const documentMessage = {
       type: 'document',
@@ -89,6 +98,77 @@ describe('消息桥校验（SPEC-ENV-04）', () => {
     expect(parseHostMessage({ type: 'playback', action: 'toggle', filePath: '/etc/passwd' })).toEqual({
       type: 'playback',
       action: 'toggle',
+    });
+  });
+
+  it('[SPEC-ENV-04] reveal-range / linkage-unavailable / source-highlight 校验：偏移为字符偏移、原因限登记枚举、高亮区间有上限', () => {
+    // 点击定位请求：start / end 为非负整数
+    expect(parseWebviewMessage({ type: 'reveal-range', start: 8, end: 10 })).toEqual({
+      type: 'reveal-range',
+      start: 8,
+      end: 10,
+    });
+    expect(parseWebviewMessage({ type: 'reveal-range', start: 8 })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'reveal-range', start: -1, end: 10 })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'reveal-range', start: 1.5, end: 2 })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'reveal-range', start: 0, end: 0 })).toEqual({
+      type: 'reveal-range',
+      start: 0,
+      end: 0,
+    });
+
+    // 联动说明：只接受四个登记原因
+    for (const reason of ['no-mapping', 'no-selection', 'update-pending', 'stale-score'] as const) {
+      expect(parseWebviewMessage({ type: 'linkage-unavailable', reason })).toEqual({
+        type: 'linkage-unavailable',
+        reason,
+      });
+    }
+    expect(parseWebviewMessage({ type: 'linkage-unavailable', reason: 'other' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'linkage-unavailable' })).toBeUndefined();
+
+    // 播放高亮回传：区间数组（空数组 = 清除），非法项与超限拒绝，额外字段丢弃
+    expect(parseWebviewMessage({ type: 'source-highlight', ranges: [] })).toEqual({
+      type: 'source-highlight',
+      ranges: [],
+    });
+    expect(parseWebviewMessage({ type: 'source-highlight', ranges: [{ start: 1, end: 2 }] })).toEqual({
+      type: 'source-highlight',
+      ranges: [{ start: 1, end: 2 }],
+    });
+    expect(
+      parseWebviewMessage({ type: 'source-highlight', ranges: [{ start: 1, end: 2, extra: true }] }),
+    ).toEqual({ type: 'source-highlight', ranges: [{ start: 1, end: 2 }] });
+    expect(parseWebviewMessage({ type: 'source-highlight', ranges: [{ start: 1 }] })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'source-highlight', ranges: 'x' })).toBeUndefined();
+    expect(
+      parseWebviewMessage({
+        type: 'source-highlight',
+        ranges: Array.from({ length: 17 }, (_, index) => ({ start: index, end: index + 1 })),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('[SPEC-ENV-04] 宿主联动消息校验：cursor 允许 null 清除、play-from-cursor 需要字符偏移、play-from-selection 无载荷', () => {
+    expect(parseHostMessage({ type: 'cursor', offset: 12 })).toEqual({ type: 'cursor', offset: 12 });
+    expect(parseHostMessage({ type: 'cursor', offset: null })).toEqual({ type: 'cursor', offset: null });
+    expect(parseHostMessage({ type: 'cursor' })).toBeUndefined();
+    expect(parseHostMessage({ type: 'cursor', offset: -1 })).toBeUndefined();
+    expect(parseHostMessage({ type: 'cursor', offset: 1.5 })).toBeUndefined();
+
+    expect(parseHostMessage({ type: 'play-from-cursor', offset: 0 })).toEqual({
+      type: 'play-from-cursor',
+      offset: 0,
+    });
+    expect(parseHostMessage({ type: 'play-from-cursor', offset: -2 })).toBeUndefined();
+    expect(parseHostMessage({ type: 'play-from-cursor' })).toBeUndefined();
+    expect(
+      parseHostMessage({ type: 'play-from-cursor', offset: 3, uri: 'file:///etc/passwd' }),
+    ).toEqual({ type: 'play-from-cursor', offset: 3 });
+
+    expect(parseHostMessage({ type: 'play-from-selection' })).toEqual({ type: 'play-from-selection' });
+    expect(parseHostMessage({ type: 'play-from-selection', offset: 5 })).toEqual({
+      type: 'play-from-selection',
     });
   });
 });

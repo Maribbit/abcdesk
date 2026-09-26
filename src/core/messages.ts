@@ -30,11 +30,55 @@ export interface WebviewRevealSourceMessage {
   type: 'reveal-source';
 }
 
+/** 点击谱面音符后的源码定位请求（SPEC-PLAY-11）：start / end 为字符偏移（左闭右开，abcjs 约定）。 */
+export interface WebviewRevealRangeMessage {
+  type: 'reveal-range';
+  start: number;
+  end: number;
+}
+
+/** 联动无法执行的原因（SPEC-PLAY-11 / 12）：宿主据此说明，不静默失败。 */
+export type LinkageUnavailableReason =
+  | 'no-mapping'
+  | 'no-selection'
+  | 'update-pending'
+  | 'stale-score';
+
+/** 联动无法执行时的说明请求（SPEC-PLAY-11 / 12）。 */
+export interface WebviewLinkageUnavailableMessage {
+  type: 'linkage-unavailable';
+  reason: LinkageUnavailableReason;
+}
+
+/** 播放高亮区间（字符偏移，左闭右开）。 */
+export interface SourceHighlightRange {
+  start: number;
+  end: number;
+}
+
+/** 播放高亮回传（SPEC-PLAY-11）：宿主对可见源码编辑器设装饰，不滚动、不移动光标；空数组表示清除。 */
+export interface WebviewSourceHighlightMessage {
+  type: 'source-highlight';
+  ranges: SourceHighlightRange[];
+}
+
+/**
+ * 预览控制区"从此处播放"按钮的起播请求（SPEC-PLAY-12）：与命令共用宿主路径
+ * （先刷新待更新文档、按面板绑定文档执行）；位置由预览内选择决定，无载荷。
+ */
+export interface WebviewPlayFromSelectionRequestMessage {
+  type: 'play-from-selection-request';
+}
+
 export type WebviewMessage =
   | WebviewReadyMessage
   | WebviewRenderedMessage
   | WebviewPlaybackStateMessage
-  | WebviewRevealSourceMessage;
+  | WebviewRevealSourceMessage
+  | WebviewRevealRangeMessage
+  | WebviewLinkageUnavailableMessage
+  | WebviewSourceHighlightMessage
+  | WebviewPlayFromSelectionRequestMessage;
 
 /** 解析 webview 消息：只接受形状完整的已登记类型，丢弃额外字段。 */
 export function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
@@ -58,6 +102,26 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
   if (message.type === 'reveal-source') {
     return { type: 'reveal-source' };
   }
+  if (
+    message.type === 'reveal-range' &&
+    isCharOffset(message.start) &&
+    isCharOffset(message.end)
+  ) {
+    return { type: 'reveal-range', start: message.start, end: message.end };
+  }
+  if (message.type === 'linkage-unavailable' && isLinkageReason(message.reason)) {
+    return { type: 'linkage-unavailable', reason: message.reason };
+  }
+  if (message.type === 'source-highlight' && isSourceHighlightRanges(message.ranges)) {
+    // 逐项重构建：按类型校验的同时丢弃额外字段（SPEC-ENV-04）
+    return {
+      type: 'source-highlight',
+      ranges: message.ranges.map((range) => ({ start: range.start, end: range.end })),
+    };
+  }
+  if (message.type === 'play-from-selection-request') {
+    return { type: 'play-from-selection-request' };
+  }
   return undefined;
 }
 
@@ -80,7 +144,32 @@ export interface PlaybackMessage {
   action: 'toggle' | 'pause' | 'stop';
 }
 
-export type HostMessage = DocumentMessage | PlaybackMessage;
+export type HostMessage =
+  | DocumentMessage
+  | PlaybackMessage
+  | CursorMessage
+  | PlayFromCursorMessage
+  | PlayFromSelectionMessage;
+
+/**
+ * 源码光标位置推送（SPEC-PLAY-11）：webview 据此更新谱面查阅标记，不触发播放；
+ * null 表示光标不在当前曲目或不可用，清除标记。
+ */
+export interface CursorMessage {
+  type: 'cursor';
+  offset: number | null;
+}
+
+/** 从源码光标起播（SPEC-PLAY-12）：按映射定位起播；无有效映射时由 webview 回原因说明。 */
+export interface PlayFromCursorMessage {
+  type: 'play-from-cursor';
+  offset: number;
+}
+
+/** 从预览所选音符起播（SPEC-PLAY-12）：无选择或映射失效时由 webview 回原因说明。 */
+export interface PlayFromSelectionMessage {
+  type: 'play-from-selection';
+}
 
 /** 解析宿主消息：webview 侧同样只接受已登记形状，防御消息桥之外的注入来源。 */
 export function parseHostMessage(value: unknown): HostMessage | undefined {
@@ -108,12 +197,51 @@ export function parseHostMessage(value: unknown): HostMessage | undefined {
   if (message.type === 'playback' && isPlaybackAction(message.action)) {
     return { type: 'playback', action: message.action };
   }
+  if (message.type === 'cursor' && (message.offset === null || isCharOffset(message.offset))) {
+    return { type: 'cursor', offset: message.offset };
+  }
+  if (message.type === 'play-from-cursor' && isCharOffset(message.offset)) {
+    return { type: 'play-from-cursor', offset: message.offset };
+  }
+  if (message.type === 'play-from-selection') {
+    return { type: 'play-from-selection' };
+  }
   return undefined;
 }
 
 /** 文档版本：非负整数（SPEC-ENV-04 的数值范围校验）。 */
 function isDocumentVersion(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** 字符偏移：非负整数（源文档 offset 与 abcjs startChar / endChar 的口径）。 */
+function isCharOffset(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** 播放高亮区间上限：一次播放高亮涉及的音符数远超实际需要时视为异常消息。 */
+const SOURCE_HIGHLIGHT_MAX = 16;
+
+function isLinkageReason(value: unknown): value is LinkageUnavailableReason {
+  return (
+    value === 'no-mapping' ||
+    value === 'no-selection' ||
+    value === 'update-pending' ||
+    value === 'stale-score'
+  );
+}
+
+function isSourceHighlightRanges(value: unknown): value is SourceHighlightRange[] {
+  if (!Array.isArray(value) || value.length > SOURCE_HIGHLIGHT_MAX) {
+    return false;
+  }
+  return value.every(
+    (item: unknown) =>
+      typeof item === 'object' &&
+      item !== null &&
+      isCharOffset((item as Record<string, unknown>).start) &&
+      isCharOffset((item as Record<string, unknown>).end),
+  );
 }
 
 function isPlaybackState(value: unknown): value is WebviewPlaybackStateMessage['state'] {

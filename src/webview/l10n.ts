@@ -22,6 +22,9 @@ const EN: Record<string, string> = {
   'empty-file': 'The file has no music content yet.',
   'reveal-source': 'Go to source',
   'no-notes': 'The score has no playable notes.',
+  'resume-follow': 'Resume following',
+  'play-from-here': 'Play from Here',
+  'select-note-first': 'Select a note on the score first.',
 };
 
 const ZH_CN: Record<string, string> = {
@@ -40,6 +43,9 @@ const ZH_CN: Record<string, string> = {
   'empty-file': '文件尚无音乐内容',
   'reveal-source': '转到源码编辑',
   'no-notes': '乐谱中没有可播放的音符。',
+  'resume-follow': '恢复跟随',
+  'play-from-here': '从此处播放',
+  'select-note-first': '先在谱面中选择一个音符。',
 };
 
 export function t(key: string): string {
