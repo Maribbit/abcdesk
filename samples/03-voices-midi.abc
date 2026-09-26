@@ -1,0 +1,14 @@
+X:1
+T:Two Voices with MIDI Hints
+T:(多声部与乐器指令:播放统一钢琴音色)
+M:4/4
+L:1/8
+K:C
+V:Soprano clef=treble name="旋律"
+%%MIDI program 1
+V:Bass clef=bass name="低音"
+%%MIDI program 33
+V:Soprano
+C2 E2 G2 c2 | e2 d2 c2 z2 |
+V:Bass
+C,4 G,4 | C,4 G,4 |

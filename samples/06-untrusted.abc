@@ -1,0 +1,9 @@
+X:1
+T:Untrusted <script>alert(1)</script> Title
+T:<img src=x onerror=alert(1)>
+C:"; DROP TABLE tunes; --
+M:4/4
+L:1/8
+K:C
+^"<b>bold?</b>" C4 E4 |
+G4 c4 |]

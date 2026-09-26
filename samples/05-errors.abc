@@ -1,0 +1,13 @@
+X:1
+T:Broken Sample
+T:(含语法错误与告警:诊断与失败占位验证)
+M:4/4
+L:1/8
+K:C
+C2 E2 G2 c2 |
+% 以下依次为无效调号、未知装饰与无效拍号
+K:xyz
+A2 B2 c2 d2 |
+!nonexistent! D4 |
+M:badmeter
+C8 |
