@@ -3,9 +3,11 @@
  * spec-check：docs/spec 规格条目与绑定引用（测试代码 / 人工验证清单）的双向校验。
  *
  * 正向：每个规格条目必须至少被一处引用覆盖——
- *   auto   条目：出现在 src/ 或 test/ 的 *.test.ts 中（it() 与 it.todo 均可）；
+ *   auto   条目：出现在 src/ 或 test/ 的 *.test.ts 的测试声明标题中
+ *          （it / it.todo / it.skip / it.only / describe / test 的首个字符串参数）；
  *   manual 条目：出现在 docs/manual-checks.md 中。
  * 反向：所有 [SPEC-...] 引用必须能在规格文档中找到定义（无悬空引用）。
+ * 附带：输出 it.todo 占位待转正清单（进度可见性，不影响退出码）。
  *
  * 用法：npm run spec:check；违规时退出码为 1。
  */
@@ -19,6 +21,9 @@ const manualChecksPath = join(root, 'docs', 'manual-checks.md');
 
 const ENTRY_PATTERN = /^### (SPEC-[A-Z0-9]+-\d{2})\s+(.+)$/gm;
 const REFERENCE_PATTERN = /\[(SPEC-[A-Z0-9]+-\d{2})\]/g;
+// 测试声明：只承认声明调用首个字符串参数（标题）内的引用；`.todo` 视为占位。
+const DECLARATION_PATTERN =
+  /(?<![\w.])(?:it|describe|test)(?:\.(todo|skip|only))?\s*\(\s*(?:'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`)/g;
 const VERIFY_PATTERN = /^\s*[-*]\s*验证：\s*(auto|manual)\s*$/m;
 
 function readText(path) {
@@ -53,13 +58,18 @@ function collectSpecItems() {
   return { items, errors };
 }
 
-function collectTestReferences(dir, into) {
+function collectTestReferences(dir, realRefs, todoRefs) {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir, { recursive: true })) {
     if (!name.endsWith('.test.ts')) continue;
     const text = readText(join(dir, name));
-    for (const match of text.matchAll(REFERENCE_PATTERN)) {
-      into.add(match[1]);
+    for (const match of text.matchAll(DECLARATION_PATTERN)) {
+      const [, modifier, single, double, backtick] = match;
+      const title = single ?? double ?? backtick ?? '';
+      const target = modifier === 'todo' ? todoRefs : realRefs;
+      for (const ref of title.matchAll(REFERENCE_PATTERN)) {
+        target.add(ref[1]);
+      }
     }
   }
 }
@@ -75,9 +85,11 @@ function collectManualReferences() {
 }
 
 const { items, errors } = collectSpecItems();
-const testRefs = new Set();
-collectTestReferences(join(root, 'src'), testRefs);
-collectTestReferences(join(root, 'test'), testRefs);
+const realRefs = new Set();
+const todoRefs = new Set();
+collectTestReferences(join(root, 'src'), realRefs, todoRefs);
+collectTestReferences(join(root, 'test'), realRefs, todoRefs);
+const testRefs = new Set([...realRefs, ...todoRefs]);
 const manualRefs = collectManualReferences();
 
 const unbound = [];
@@ -98,8 +110,15 @@ for (const ref of new Set([...testRefs, ...manualRefs])) {
 
 console.log('spec-check：规格条目与绑定引用双向校验');
 console.log(
-  `  规格条目 ${items.size}；测试引用 ${testRefs.size}；人工验证引用 ${manualRefs.size}`,
+  `  规格条目 ${items.size}；测试引用 ${testRefs.size}（真实 ${realRefs.size}、占位 ${todoRefs.size}）；人工验证引用 ${manualRefs.size}`,
 );
+const placeholderOnly = [...todoRefs].filter((id) => !realRefs.has(id)).sort();
+if (placeholderOnly.length > 0) {
+  console.log(`  占位待转正 ${placeholderOnly.length} 条（it.todo）：`);
+  for (let i = 0; i < placeholderOnly.length; i += 6) {
+    console.log(`    ${placeholderOnly.slice(i, i + 6).join(', ')}`);
+  }
+}
 for (const message of errors) console.log(`  [错误] ${message}`);
 for (const message of unbound) console.log(`  [未绑定] ${message}`);
 for (const message of dangling) console.log(`  [悬空引用] ${message}`);
