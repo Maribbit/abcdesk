@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { parseOnly, type AbcElem } from 'abcjs';
 import { describe, expect, it } from 'vitest';
 import {
   SPEED_DEFAULT,
@@ -121,5 +123,100 @@ describe('和弦轨识别（SPEC-PLAY-06）', () => {
     expect(hasChordTrack([...voices, [{ cmd: 'note', channel: 2 }]], 2)).toBe(false);
     // 防御：非数组输入
     expect(hasChordTrack(undefined, 2)).toBe(false);
+  });
+});
+
+// 用真实复杂材料补充结构桩测试：只解析与展开事件，不创建 AudioContext 或下载音色。
+const originalSample = readFileSync(
+  new URL('../samples/09-lanterns-on-the-tide.abc', import.meta.url),
+  'utf8',
+);
+
+describe('09 原创曲目：多声部与混合拍号回归', () => {
+  it('[SPEC-PLAY-06] 无解析告警，四声部各 49 小节且逐小节时值一致', () => {
+    const tunes = parseOnly(originalSample);
+    expect(tunes).toHaveLength(1);
+    const tune = tunes[0];
+    expect(tune.warnings ?? []).toEqual([]);
+    expect(collectVoices(tune)).toEqual([
+      { index: 0, name: '旋律' },
+      { index: 1, name: '应答' },
+      { index: 2, name: '织体' },
+      { index: 3, name: '低音' },
+    ]);
+    const bars = Array.from({ length: 4 }, () => [] as number[]);
+    const durations = [0, 0, 0, 0];
+    const multipliers = [1, 1, 1, 1];
+    const meters = new Set<string>();
+    for (const line of tune.lines) {
+      for (const [voiceIndex, staff] of (line.staff ?? []).entries()) {
+        expect(staff.voices).toHaveLength(1);
+        for (const meter of staff.meter?.value ?? []) {
+          meters.add(`${meter.num}/${meter.den}`);
+        }
+        for (const item of staff.voices?.[0] ?? []) {
+          if (item.el_type === 'note') {
+            // abcjs 的连音时值另存在 tripletMultiplier；倚音不额外占用主音时值。
+            const note = item as AbcElem;
+            if (note.startTriplet !== undefined) {
+              multipliers[voiceIndex] = note.tripletMultiplier ?? 1;
+            }
+            durations[voiceIndex] += item.duration * multipliers[voiceIndex];
+            if (note.endTriplet) {
+              multipliers[voiceIndex] = 1;
+            }
+          } else if (item.el_type === 'bar' && durations[voiceIndex] > 0) {
+            bars[voiceIndex].push(durations[voiceIndex]);
+            durations[voiceIndex] = 0;
+          }
+        }
+      }
+    }
+    expect([...meters].sort()).toEqual(['3/4', '4/4', '6/8']);
+    expect(durations).toEqual([0, 0, 0, 0]);
+    for (const voiceBars of bars) {
+      expect(voiceBars).toHaveLength(49);
+      voiceBars.forEach((duration, index) => {
+        // 实写 26–33 为 4/4，其余为 6/8 或 3/4（以全音符为时值单位）。
+        expect(duration, `实写第 ${index + 1} 小节`).toBeCloseTo(index >= 25 && index < 33 ? 1 : 0.75);
+      });
+    }
+  });
+
+  it('[SPEC-PLAY-04] [SPEC-PLAY-05] 一二房反复与六段速度展开为约 108 秒的演奏', () => {
+    const tune = parseOnly(originalSample)[0];
+    const firstNote = tune.lines.flatMap((line) => line.staff?.[0].voices?.[0] ?? [])
+      .find((item) => item.el_type === 'note');
+    expect(firstNote).toBeDefined();
+    const audio = tune.setUpAudio({});
+    const firstOccurrences = audio.tracks[0].filter(
+      (event) => event.cmd === 'note' && event.startChar === firstNote?.startChar,
+    );
+    expect(firstOccurrences).toHaveLength(2);
+    // A 展开为 16 小节，其余五段各 8 小节；按段拍单位而非单一 BPM 计算参考时间。
+    const expectedSeconds = 16 * 120 / 66 + 8 * 120 / 72 + 8 * 180 / 90
+      + 8 * 240 / 108 + 8 * 120 / 66 + 8 * 120 / 56;
+    // 与 CreateSynth.prime 同口径：tempo 的拍单位并不恒为四分音符，不能直接按 240 / BPM 换算。
+    const secondsPerWholeNote = tune.millisecondsPerMeasure() / 1000 / tune.getBarLength();
+    expect(audio.totalDuration * secondsPerWholeNote).toBeCloseTo(expectedSeconds, 3);
+    for (const track of audio.tracks.slice(0, 4)) {
+      const end = Math.max(...track.map((event) => event.cmd === 'note' ? event.start + event.duration : 0));
+      expect(end * secondsPerWholeNote).toBeCloseTo(expectedSeconds, 3);
+    }
+  });
+
+  it('[SPEC-PLAY-06] [SPEC-PLAY-10] 自动和弦独立成轨，静音应答与织体不影响旋律和低音', () => {
+    const audio = parseOnly(originalSample)[0].setUpAudio({});
+    expect(audio.tracks).toHaveLength(5);
+    expect(hasChordTrack(audio.tracks, 4)).toBe(true);
+    const muted = parseOnly(originalSample)[0].setUpAudio({ voicesOff: [1, 2], chordsOff: true });
+    expect(muted.tracks).toHaveLength(4);
+    expect(hasChordTrack(muted.tracks, 4)).toBe(false);
+    expect(muted.totalDuration).toBeCloseTo(audio.totalDuration);
+    muted.tracks.forEach((track, index) => {
+      const notes = track.filter((event) => event.cmd === 'note');
+      expect(notes.length).toBeGreaterThan(0);
+      expect(notes.some((note) => note.volume > 0)).toBe(index === 0 || index === 3);
+    });
   });
 });

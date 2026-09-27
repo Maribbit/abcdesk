@@ -1,0 +1,119 @@
+%abc-2.1
+% 原创四声部室内乐：以六八拍的摇曳主题贯穿，对比段转入小调与四四拍，再回归宁静。
+% 四个记谱声部 + 和弦符号自动伴奏；自动伴奏刻意较轻，可单独静音比较显式编配。
+% 实写 49 小节；A 段一、二房反复后演奏 56 小节。各声部的反复、变拍与转调位置一致。
+X:9
+T:雨灯与归舟
+T:Lanterns on the Returning Tide
+C:ABC Desk 原创样本
+R:室内乐小品 · 舟歌与回旋
+N:旋律、应答、织体、低音均为独立声部；ABC Desk 当前统一使用钢琴音色。
+N:力度、连线、装饰与延长号兼作排版材料，具体演奏效果依播放器支持而定。
+M:6/8
+L:1/8
+Q:"Andante, gently rocking" 3/8=66
+%%score [melody answer {texture bass}]
+%%staffsep 65
+%%MIDI chordprog 0
+%%MIDI bassprog 0
+%%MIDI chordvol 36
+%%MIDI bassvol 30
+V:melody clef=treble name="旋律" snm="旋"
+V:answer clef=treble name="应答" snm="答"
+V:texture clef=treble name="织体" snm="织"
+V:bass clef=bass name="低音" snm="低"
+K:G
+%
+% A · 雨灯：G 大调，6/8；实写 1–9，演奏 16 小节（共同七小节 + 一、二房各一小节）。
+% 主旋律的上行六度与级进回落为全曲动机；应答从后半小节进入。
+[V:melody]
+%%MIDI program 73
+|: "^A · 雨灯""G"!mp!(D2 G B2 A) | "D/F#"(A2 F D2 F) | "Em7"(G2 B e2 d) | "Cmaj7"(c2 B G3) |
+"Am7"{B}c2 B A2 G | "D7"(!trill!F2 A c2 A) | "G/D"B2 G "D7"(F G A) |[1 "G"G3 "D7"A3 :|
+[2 "G6"G6 ||
+[V:answer]
+%%MIDI program 40
+|: !p!z3 (G B d) | (F3 A3) | (B,2 E G2 F) | (E2 G B3) |
+(E3 C3) | (D2 F A2 F) | G3 F3 |[1 B,3 C3 :|
+[2 Z ||
+[V:texture]
+%%MIDI program 0
+|: !p!(G, D G B G D) | (F, A, D F D A,) | (E, B, E G E B,) | (C E G B G E) |
+(A, E A c A E) | (D A, C F A c) | (D G B) (D F A) |[1 (G, B, D) (D F A) :|
+[2 (G, D E G B d) ||
+[V:bass]
+%%MIDI program 42
+|: !p!G,,3 D,3 | F,,3 D,3 | E,,3 B,,3 | C,3 G,,3 |
+A,,3 E,3 | D,,3 A,,3 | D,,6 |[1 G,,3 D,,3 :|
+[2 G,,6 ||
+%
+% B · 水光：实写 10–17，D 大调，稍快；显式三连音、附点节奏、倚音与同音延音线。
+[V:melody] [K:D] [Q:"Poco mosso" 3/8=72]
+"^B · 水光""D"!mf!(f2 e d2 A) | "A/C#"(e>d c B2 A) | "Bm"(3:2:3Bcd f2 d2 | "G"(g2 f e2 d) |
+"Em7"{de}e2 d B2 G | "A7"(c2 e g2 e) | "D/A"f2 d "A7"e2 c | "D"d3-d2 z ||
+[V:answer] [K:D]
+!mp!(F3 A3) | (E3 G3) | (F2 B A2 F) | (B3 G3) |
+(G3 B3) | (A2 G E2 G) | A3 G3 | F6 ||
+[V:texture] [K:D]
+!mp!(D F A d A F) | (C E A c A E) | (B, F B d B F) | (G, B, D G D B,) |
+(E G B d B G) | (A, E G c G E) | (A, D F) (A, C E) | D F A d3 ||
+[V:bass] [K:D]
+!mp!D,3 A,,3 | C,3 A,,3 | B,,3 F,3 | G,,3 D,3 |
+E,,3 B,,3 | A,,3 E,3 | A,,6 | D,6 ||
+%
+% C · 夜桥：实写 18–25，E 小调，3/4；属和弦的 D 升号逐小节声明，减七和弦引向 B7。
+[V:melody] [M:3/4] [K:Em] [Q:"Cantabile" 1/4=90]
+"^C · 夜桥""Em"!p!(B2 e2 g2) | "B7"!turn!f2 ^d2 B2 | "Em"(e4 B2) | "Am"(c2 e2 a2) |
+"Cmaj7"(g>f e2 B2) | "F#dim7"(c2 A2 ^D2) | "B7"(F2 ^D2 B,2) | "Em"E6 ||
+[V:answer] [M:3/4] [K:Em]
+!p!(G2 B2 e2) | (F2 A2 ^d2) | (G4 E2) | (E2 A2 c2) |
+(E2 G2 e2) | (A,2 C2 ^D2) | (^D2 F2 A2) | G6 ||
+[V:texture] [M:3/4] [K:Em]
+!pp!(E G B e B G) | (B, ^D F A F ^D) | (E G B e B G) | (A, E A c A E) |
+(C E G B G E) | (F, A, C ^D C A,) | (B, ^D F A F ^D) | E G B e3 ||
+[V:bass] [M:3/4] [K:Em]
+!p!E,,4 B,,2 | B,,4 F,2 | E,,4 B,,2 | A,,4 E,2 |
+C,4 G,,2 | F,,4 C,2 | B,,4 B,2 | E,,6 ||
+%
+% D · 风起：实写 26–33，G 大调，4/4；分解织体转为切分柱式和弦，加入重音、断奏与渐强弱。
+[V:melody] [M:4/4] [K:G] [Q:"Con moto" 1/4=108]
+"^D · 风起""Cmaj7"!mf!!crescendo(!(e2 d2 B2 G2) | "G/B"(d2 B2 G4) | "Am7"(c2 e2) (3:2:3gag e2 | "D7"!f!!crescendo)!d2 !accent!c2 (A2 F2) |
+"Em7"(G2 B2 e2 d2) | "C"(c2 B2) !tenuto!G4 | "Dsus4"(A2 G2) "D7"(F2 E2) | "G"!diminuendo(!D2 G2 !fermata!B4!diminuendo)! ||
+[V:answer] [M:4/4] [K:G]
+!mf!(G2 B2 e4) | (D2 G2 B4) | (E2 A2 c2 B2) | (F2 A2) z2 A2 |
+(B,2 E2 G2 B2) | (E2 G2 c4) | D4 C4 | B,2 D2 !fermata!G4 ||
+[V:texture] [M:4/4] [K:G]
+!mf![CEG]2 z [EGB] [CEG]2 [EGB]2 | [B,DG]2 z [DGB] [B,DG]2 [DGB]2 | [A,CE]2 z [EAc] [A,CE]2 [EAc]2 | .[DFA]2 z [FAc] .[DFA]2 [FAc]2 |
+(E G B e) (d B G E) | (C E G c) (e c G E) | [DGA]4 [DFAc]4 | [B,DG]2 [DGB]2 !fermata![GBd]4 ||
+[V:bass] [M:4/4] [K:G]
+!mf!C,2 G,,2 C,2 E,2 | B,,2 D,2 G,,2 B,,2 | A,,2 E,2 A,,2 C,2 | D,2 A,,2 C,2 D,2 |
+E,,2 B,,2 E,2 G,2 | C,2 G,,2 E,2 C,2 | D,4 D,,4 | G,,2 D,2 !fermata!G,4 ||
+%
+% A' · 归舟：实写 34–41，回到六八拍；旋律动机倒转，应答接过开头动机，织体穿插十六分音符。
+% 第 39 小节的五连音占三个八分音符，给属和弦一次轻盈的上行装饰。
+[V:melody] [M:6/8] [K:G] [Q:"Tempo primo" 3/8=66]
+"^A' · 归舟""G"!mp!{/c}(B2 A G2 D) | "D/F#"(A2 F D2 F) | "Em7"(3:2:3GAB e2 d2 | "Cmaj7"(c2 B G3) |
+"Am7"{Bc}e2 d c2 A | "D7"(5:3:5FGABc A2 F | "G/D"(B2 G) "D7"(A2 F) | "G"G3-G3 ||
+[V:answer] [M:6/8] [K:G]
+!mp!(D2 G B2 A) | (F2 A c2 A) | E3 G3 | (E2 G e2 d) |
+c3 A3 | A3 F3 | G3 C3 | B,6 ||
+[V:texture] [M:6/8] [K:G]
+!p!(G, B, D) (G B d) | (F, A, D F D A,) | (E, B,/E/ G B G E) | (C E G B G E) |
+(A, E A c A E) | (D A, C F A c) | (D G B) (D F A) | (G, B, D G3) ||
+[V:bass] [M:6/8] [K:G]
+!p!G,,3 D,3 | F,,3 D,3 | E,,3 B,,3 | C,3 G,,3 |
+A,,3 E,3 | D,,3 A,,3 | D,,6 | G,,6 ||
+%
+% 尾声 · 灯远：实写 42–49，略慢；低音跨小节延音，终止于带六度的 G 和弦。
+[V:melody] [Q:"Calmando" 3/8=56]
+"^尾声 · 灯远""Cmaj7"!p!(e2 d c2 B) | "G/B"(d2 B G3) | "Am7"(c2 B A2 G) | "D7"(F2 A c2 A) |
+"Em7"!diminuendo(!(B3 G3) | "C6"E2 G "D7"F2 A | "G"(G3-G3) | "G6"!pp!!fermata!G6!diminuendo)! |]
+[V:answer]
+!p!G3 E3 | D3 B,3 | E3 C3 | A,2 C D2 F |
+E3 B,3 | C3 C3 | B,6 | !pp!!fermata![B,E]6 |]
+[V:texture]
+!p!(C E G B G E) | (B, D G B G D) | (A, C E A E C) | (D A, C F A c) |
+(E, G, B, E G B) | (C E A) (D F A) | [B,DG]3-[B,DG]3 | !pp!!fermata![B,DEG]6 |]
+[V:bass]
+!p!C,3 G,,3 | B,,3 G,,3 | A,,3 E,3 | D,,3 A,,3 |
+E,,3 B,,3 | C,3 D,3 | G,,6- | !pp!!fermata!G,,6 |]
