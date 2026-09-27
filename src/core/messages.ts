@@ -50,7 +50,7 @@ export interface WebviewLinkageUnavailableMessage {
   reason: LinkageUnavailableReason;
 }
 
-/** 播放高亮区间（字符偏移，左闭右开）。 */
+/** 源码区间（字符偏移，左闭右开）：播放高亮回传与目标轮廓回传共用。 */
 export interface SourceHighlightRange {
   start: number;
   end: number;
@@ -59,6 +59,12 @@ export interface SourceHighlightRange {
 /** 播放高亮回传（SPEC-PLAY-11）：宿主对可见源码编辑器设装饰，不滚动、不移动光标；空数组表示清除。 */
 export interface WebviewSourceHighlightMessage {
   type: 'source-highlight';
+  ranges: SourceHighlightRange[];
+}
+
+/** 当前目标音符的源码区间回传（SPEC-PLAY-11）：宿主据此同步编辑器侧轮廓标记，不滚动、不移动光标；空数组表示清除。 */
+export interface WebviewTargetRangesMessage {
+  type: 'target-ranges';
   ranges: SourceHighlightRange[];
 }
 
@@ -78,6 +84,7 @@ export type WebviewMessage =
   | WebviewRevealRangeMessage
   | WebviewLinkageUnavailableMessage
   | WebviewSourceHighlightMessage
+  | WebviewTargetRangesMessage
   | WebviewPlayFromSelectionRequestMessage;
 
 /** 解析 webview 消息：只接受形状完整的已登记类型，丢弃额外字段。 */
@@ -112,10 +119,17 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
   if (message.type === 'linkage-unavailable' && isLinkageReason(message.reason)) {
     return { type: 'linkage-unavailable', reason: message.reason };
   }
-  if (message.type === 'source-highlight' && isSourceHighlightRanges(message.ranges)) {
+  if (message.type === 'source-highlight' && isCharRanges(message.ranges)) {
     // 逐项重构建：按类型校验的同时丢弃额外字段（SPEC-ENV-04）
     return {
       type: 'source-highlight',
+      ranges: message.ranges.map((range) => ({ start: range.start, end: range.end })),
+    };
+  }
+  if (message.type === 'target-ranges' && isCharRanges(message.ranges)) {
+    // 逐项重构建：按类型校验的同时丢弃额外字段（SPEC-ENV-04）
+    return {
+      type: 'target-ranges',
       ranges: message.ranges.map((range) => ({ start: range.start, end: range.end })),
     };
   }
@@ -166,7 +180,7 @@ export interface PlayFromCursorMessage {
   offset: number;
 }
 
-/** 从预览所选音符起播（SPEC-PLAY-12）：无选择或映射失效时由 webview 回原因说明。 */
+/** 从预览当前目标音符起播（SPEC-PLAY-12）：无目标或映射失效时由 webview 回原因说明。 */
 export interface PlayFromSelectionMessage {
   type: 'play-from-selection';
 }
@@ -219,8 +233,8 @@ function isCharOffset(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
-/** 播放高亮区间上限：一次播放高亮涉及的音符数远超实际需要时视为异常消息。 */
-const SOURCE_HIGHLIGHT_MAX = 16;
+/** 区间数组上限：一次播放高亮 / 目标轮廓涉及的音符数远超实际需要时视为异常消息。 */
+const CHAR_RANGES_MAX = 16;
 
 function isLinkageReason(value: unknown): value is LinkageUnavailableReason {
   return (
@@ -231,8 +245,8 @@ function isLinkageReason(value: unknown): value is LinkageUnavailableReason {
   );
 }
 
-function isSourceHighlightRanges(value: unknown): value is SourceHighlightRange[] {
-  if (!Array.isArray(value) || value.length > SOURCE_HIGHLIGHT_MAX) {
+function isCharRanges(value: unknown): value is SourceHighlightRange[] {
+  if (!Array.isArray(value) || value.length > CHAR_RANGES_MAX) {
     return false;
   }
   return value.every(

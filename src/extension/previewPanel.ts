@@ -22,7 +22,7 @@ import {
  * - 播放中的换版与应用时机由 webview 按 SPEC-STATE-07 执行，宿主只负责推送最新版本；
  * - 播放类命令可按需显示预览并保留源码焦点，首次渲染成功后仅执行仍有效的起播请求（SPEC-CMD-07 / 09）；
  * - 文档变化到新版本渲染确认之间停用源码联动：不推送光标、不定位、不起播，并清除源码高亮（SPEC-PLAY-11）；
- * - 点击谱面音符的源码定位只设选区与滚动、不抢焦点，编辑器侧以专用轮廓标记呈现该片段（与原生选区、同文高亮双重区分）；播放高亮只对可见编辑器设装饰（SPEC-PLAY-11）；
+ * - 点击谱面音符的源码定位只设选区与滚动、不抢焦点，编辑器侧以专用轮廓标记呈现当前目标音符的源码区间（随目标同步、与原生选区 / 同文高亮双重区分）；播放高亮只对可见编辑器设装饰（SPEC-PLAY-11）；
  * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
  * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点，来源标签关闭后按 URI 重新打开（SPEC-STATE-05 / CMD-12）。
  *
@@ -56,8 +56,8 @@ interface PanelEntry {
   lastCursorOffset: number | undefined;
   /** 防抖期间待推送的最新文档（SPEC-CMD-06）。 */
   pendingChange: vscode.TextDocument | undefined;
-  /** 最近一次点击谱面音符的源码区间（SPEC-CMD-12 定位依据）；内容变化时清除，不套用旧偏移。 */
-  lastNoteRange: { start: number; end: number } | undefined;
+  /** 当前目标音符的源码区间（SPEC-PLAY-11 轮廓标记 / SPEC-CMD-12 落点依据），由 webview 目标回传驱动；目标清除 / 内容变化时清空，不套用旧偏移。 */
+  targetRanges: SourceHighlightRange[];
 }
 
 /** 文档更新推送防抖（毫秒）：连续输入只在稳定后推送一次最新版本。 */
@@ -74,9 +74,10 @@ export class PreviewPanelManager implements vscode.Disposable {
     overviewRulerColor: new vscode.ThemeColor('editor.findMatchHighlightBorder'),
   });
   /**
-   * 点击谱面音符的联动轮廓标记（SPEC-PLAY-11）：描边 + 概览标尺刻度，
+   * 当前目标音符的联动轮廓标记（SPEC-PLAY-11）：描边 + 概览标尺刻度，
    * 与原生选区（圆角填充）和 VS Code 同文高亮（灰盒）以形状与颜色双重区分；
-   * 由各文档最近一次点击的区间（lastNoteRange）驱动，新点击替换、内容变化清除。
+   * 由各文档当前目标音符的源码区间（targetRanges）驱动：点选 / 查阅命中后发生者胜，
+   * 目标清除、内容变化或面板关闭时清除。
    */
   private readonly linkedNote = vscode.window.createTextEditorDecorationType({
     border: '1px dashed',
@@ -86,7 +87,7 @@ export class PreviewPanelManager implements vscode.Disposable {
   });
 
   constructor(private readonly extensionUri: vscode.Uri) {
-    // 可见编辑器变化时同步轮廓标记（SPEC-PLAY-11）：新可见的编辑器按最近一次点击区间重绘
+    // 可见编辑器变化时同步轮廓标记（SPEC-PLAY-11）：新可见的编辑器按当前目标区间重绘
     this.disposables.push(
       vscode.window.onDidChangeVisibleTextEditors(() => this.syncLinkedDecorations()),
     );
@@ -146,12 +147,12 @@ export class PreviewPanelManager implements vscode.Disposable {
     void entry.panel.webview.postMessage(message);
   }
 
-  /** "从所选音符播放"命令入口（SPEC-CMD-08 / PLAY-12）：只取预览内的选择；预览不存在时按无选择说明。 */
+  /** "从所选音符播放"命令入口（SPEC-CMD-08 / PLAY-12）：取预览内的当前目标音符；预览不存在时说明先打开预览。 */
   requestPlayFromSelection(document: vscode.TextDocument): void {
     const entry = this.panels.get(document.uri.toString());
     if (entry === undefined) {
       void vscode.window.showInformationMessage(
-        vscode.l10n.t('Select a note in the preview first.'),
+        vscode.l10n.t('Open the preview first, then place the cursor on a note or select one on the score.'),
       );
       return;
     }
@@ -170,7 +171,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       return;
     }
     const entry = this.panels.get(document.uri.toString());
-    const range = entry?.lastNoteRange;
+    const range = entry?.targetRanges[0];
     try {
       const editor = await vscode.window.showTextDocument(document, {
         viewColumn: vscode.ViewColumn.One,
@@ -205,7 +206,7 @@ export class PreviewPanelManager implements vscode.Disposable {
         if (entry.lastPushedAbc !== document.getText()) {
           // 标签关闭期间的磁盘变化：先停用旧联动，再按最新内容换版（SPEC-PLAY-11 / SPEC-STATE-07）
           entry.suspend = true;
-          entry.lastNoteRange = undefined;
+          entry.targetRanges = [];
           this.clearSourceHighlight(entry);
           this.syncLinkedDecorations();
           this.pushDocument(entry, document);
@@ -270,7 +271,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     // 从发现内容变化起立即停用源码联动（SPEC-PLAY-11）：清除播放高亮、丢弃旧映射定位依据
     entry.suspend = true;
-    entry.lastNoteRange = undefined;
+    entry.targetRanges = [];
     this.clearSourceHighlight(entry);
     this.syncLinkedDecorations();
     entry.pendingChange = document;
@@ -353,7 +354,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       suspend: true,
       lastCursorOffset: undefined,
       pendingChange: undefined,
-      lastNoteRange: undefined,
+      targetRanges: [],
     };
     this.panels.set(entry.uri, entry);
     panel.webview.html = this.renderHtml(panel.webview);
@@ -434,6 +435,15 @@ export class PreviewPanelManager implements vscode.Disposable {
           this.applySourceHighlight(entry, parsed.ranges);
           return;
         }
+        if (parsed.type === 'target-ranges') {
+          if (entry.suspend) {
+            // 停用窗口：变化时已清除轮廓，此处不再应用旧映射（SPEC-PLAY-11）
+            return;
+          }
+          entry.targetRanges = parsed.ranges;
+          this.syncLinkedDecorations();
+          return;
+        }
         this.handlePlaybackState(entry, parsed.state);
       },
       undefined,
@@ -500,7 +510,7 @@ export class PreviewPanelManager implements vscode.Disposable {
 
   /**
    * 点击谱面音符的源码定位（SPEC-PLAY-11）：设置选区并滚动可见，焦点留在预览、不改变播放位置；
-   * 源码不可见时显示但不抢焦点；记录区间供 goToSource 复用。
+   * 源码不可见时显示但不抢焦点（轮廓标记由 webview 的目标区间回传驱动，不经过这里）。
    */
   private revealRange(entry: PanelEntry, message: WebviewRevealRangeMessage): void {
     const document = vscode.workspace.textDocuments.find(
@@ -509,9 +519,6 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (document === undefined) {
       return;
     }
-    entry.lastNoteRange = { start: message.start, end: message.end };
-    // 专用轮廓标记与选区一同呈现（SPEC-PLAY-11）：与原生选区填充、同文灰影形状与颜色双重区分
-    this.syncLinkedDecorations();
     // active 端取音符起点：选区变化回传的光标偏移据此落在同一音符上（SPEC-PLAY-11）
     const selection = new vscode.Selection(
       document.positionAt(message.end),
@@ -563,21 +570,18 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 按各文档最近一次点击的区间同步轮廓标记（SPEC-PLAY-11）：只作用于可见编辑器，
-   * 无区间（未点击 / 内容已变化 / 面板已关闭）时清除。
+   * 按各文档当前目标音符的源码区间同步轮廓标记（SPEC-PLAY-11）：只作用于可见编辑器，
+   * 无区间（未命中 / 目标已清除 / 内容已变化 / 面板已关闭）时清除。
    */
   private syncLinkedDecorations(): void {
     for (const editor of vscode.window.visibleTextEditors) {
-      const range = this.panels.get(editor.document.uri.toString())?.lastNoteRange;
-      const decorations =
-        range === undefined
-          ? []
-          : [
-              new vscode.Range(
-                editor.document.positionAt(range.start),
-                editor.document.positionAt(range.end),
-              ),
-            ];
+      const ranges = this.panels.get(editor.document.uri.toString())?.targetRanges ?? [];
+      const decorations = ranges.map((range) => ({
+        range: new vscode.Range(
+          editor.document.positionAt(range.start),
+          editor.document.positionAt(range.end),
+        ),
+      }));
       editor.setDecorations(this.linkedNote, decorations);
     }
   }
@@ -705,8 +709,9 @@ export class PreviewPanelManager implements vscode.Disposable {
     #score > svg { display: block; width: 100% !important; height: auto !important; }
     /*
      * 谱面联动标记（SPEC-PLAY-11）：形状与颜色双重区分——
-     * 查阅 / 点选为音符包围虚线框（覆盖层，不进入 SVG、不阻断点击命中），播放高亮为音符填充换色；两类标记可共存。
-     * CSS 类规则优先于 abcjs 写入的 presentation 属性，覆盖色随类移除即还原，无需保存还原簿记。
+     * 当前目标音符（点选 / 查阅共用）为填充 + 音符包围虚线框（覆盖层，不进入 SVG、不阻断点击命中），播放高亮为音符填充换色；两类标记可共存。
+     * CSS 类规则优先于 abcjs 写入的 presentation 属性；但原生点选改写的属性不随类移除复原，
+     * 清除标记时由 webview 按渲染快照还原（见 main.ts 的 snapshotNativePaint / clearTargetMarks）。
      */
     #score .abcdesk-reading-box {
       position: absolute;
@@ -715,8 +720,9 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 3px;
       pointer-events: none;
     }
-    /* 点选填充覆盖 abcjs 原生亮红（#ff0000）：与包围框同族；播放高亮规则保持在后（同优先级时后写生效） */
-    #score .abcjs-note_selected { fill: #8ab4f8; }
+    /* 目标填充（SPEC-PLAY-11 / 12）：点选与查阅共用的当前目标；abcjs 原生选中类同色兜底、避免闪现原生亮红；播放高亮规则保持在后（同优先级时后写生效） */
+    #score .abcjs-note_selected,
+    #score .abcdesk-target { fill: #8ab4f8; }
     #score .abcdesk-playing { fill: #d84315; }
     /*
      * 键盘可视化（SPEC-PLAY-08 / 09）：独立 dock 粘在预览底部，形态就是一架键盘——
@@ -909,7 +915,7 @@ function linkageUnavailableText(reason: LinkageUnavailableReason): string {
     case 'no-mapping':
       return vscode.l10n.t('No note matches the current position.');
     case 'no-selection':
-      return vscode.l10n.t('Select a note in the preview first.');
+      return vscode.l10n.t('Place the cursor on a note, or select one on the score.');
     case 'update-pending':
       return vscode.l10n.t('The file has unapplied changes; pause first to apply them.');
     case 'stale-score':

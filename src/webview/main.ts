@@ -1,5 +1,5 @@
 import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from 'abcjs';
-import { parseHostMessage, type DocumentMessage } from '../core/messages';
+import { parseHostMessage, type DocumentMessage, type SourceHighlightRange } from '../core/messages';
 import { PlaybackController } from './audio';
 import { KeyboardView, collectPitches } from './keyboard';
 import { t } from './l10n';
@@ -15,15 +15,15 @@ import { t } from './l10n';
  * - 渲染失败保留旧谱并标记仅供参考、禁用旧谱播放；无旧谱时显示错误占位；
  * - 空白内容显示空状态与"转到源码编辑"入口，不把旧谱当成当前内容。
  * 源码联动（SPEC-PLAY-11 / 12）：
- * - 点击谱面音符选中并请求源码定位（焦点留在预览），不改变播放位置、不额外发声；
- * - 查阅 / 点选标记（音符包围虚线框）与播放高亮（填充换色）形状与颜色双重区分；
+ * - 点击谱面音符设为目标并请求源码定位（焦点留在预览），不改变播放位置、不额外发声；
+ * - 当前目标音符（点选 / 查阅共用，后发生者胜）以填充 + 包围虚线框呈现，与播放高亮形状与颜色双重区分；
  * - 播放位置超出可视区域自动跟随滚动，手动滚动后暂停并显示"恢复跟随"；
  * - "从此处播放"按可靠映射定位起播，映射不可靠或联动停用时说明原因（不悄悄从头播放）；
- * - 控制区"从此处播放"按钮对所选音符起播（SPEC-PLAY-12），可用性随选择与联动状态刷新。
+ * - 控制区"从此处播放"按钮对当前目标音符起播（SPEC-PLAY-12），可用性随目标与联动状态刷新。
  * 键盘（SPEC-PLAY-08 / 09 / 15、STATE-03 / 05）：
  * - 键盘默认按当前曲目材料音域（至少两个八度）、可切换完整 88 键与手动收起；
  *   播放高亮跟随演奏时间（含静音声部），视口外的提示音只显示方向箭头；
- * - 光标 / 点选命中的音符以查阅色反射到键盘（SPEC-PLAY-15），随查阅标记一同清除。
+ * - 目标音符以查阅色反射到键盘（SPEC-PLAY-15），随目标一同清除。
  */
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
@@ -60,14 +60,16 @@ let showRevealSource = false;
 let hasRenderedScore = false;
 /** 当前版本的演奏时序（SPEC-PLAY-11 / 12）：字符↔音符↔元素映射的唯一依据，随渲染重建。 */
 let timingEvents: NoteTimingEvent[] = [];
-/** 预览内点击选中的音符（SPEC-PLAY-12 的"从所选音符播放"依据）；重渲染时清除。 */
-let selectedNote: { startChar: number; endChar: number } | undefined;
-/** 查阅标记的当前目标元素（SPEC-PLAY-11）：滚动定位依据，更新标记时先清旧再亮新。 */
-let readingElements: SVGElement[] = [];
-/** 查阅标记的覆盖层框（SPEC-PLAY-11）：随标记更新整体重建，换版 / 停用时清除。 */
+/** 当前目标音符的字符偏移（SPEC-PLAY-11 / 12 / 15）：预览点选或源码光标命中共同维护，后发生者胜；谱面标记、键盘反射与"从此处播放"可用性据它同步。 */
+let targetOffset: number | null = null;
+/** 目标音符的谱面元素（SPEC-PLAY-11）：滚动定位依据，更新目标时先清旧再亮新。 */
+let targetElements: SVGElement[] = [];
+/** 目标音符的覆盖层框（SPEC-PLAY-11）：随目标更新整体重建，换版 / 停用时清除。 */
 let readingBoxes: HTMLDivElement[] = [];
-/** 查阅标记对应的源码字符偏移（SPEC-PLAY-11）：面板尺寸变化后据此按新几何重绘。 */
-let readingOffset: number | null = null;
+/** 渲染时各元素 fill 属性快照（SPEC-PLAY-11）：abcjs 原生点选直接覆写该 presentation 属性、不随类移除复原，清除标记时据此还原。 */
+let nativeFillSnapshot = new WeakMap<Element, string | null>();
+/** 最近一次回传给宿主的目标源码区间序列化结果（SPEC-PLAY-11）：同一音符内的连续光标移动不重复发送。 */
+let sentTargetRanges: string | undefined;
 /** 播放高亮的当前目标元素（SPEC-PLAY-11）。 */
 let playingElements: SVGElement[] = [];
 /** 播放中用户手动滚动谱面后暂停自动跟随（SPEC-PLAY-11）；停止或换版时重置。 */
@@ -213,6 +215,8 @@ function renderDocument(message: DocumentMessage): boolean {
   contentStatusKey = null;
   showRevealSource = false;
   controller.setTune(tune);
+  // 快照 abcjs 绘制的原生 fill 属性（SPEC-PLAY-11）：原生点选会覆写该属性，清除标记时按此还原
+  snapshotNativePaint();
   // 建立字符↔演奏时序映射（SPEC-PLAY-11 / 12）：与播放共用同一份时序（P02：反复取第一次出现）
   timingEvents = controller.getTimings();
   // 键盘按当前版本的材料音高重建音域（SPEC-PLAY-08）：单曲目材料、含静音声部，不合并其他曲目
@@ -237,19 +241,14 @@ function tuneHasNotes(tune: TuneObject): boolean {
   return false;
 }
 
-/** 联动状态随渲染重建（SPEC-PLAY-11）：映射、选中、标记引用与跟随状态全部清空。 */
+/** 联动状态随渲染重建（SPEC-PLAY-11）：映射、目标与跟随状态全部清空，成功后再建立新映射。 */
 function resetLinkageState(): void {
   timingEvents = [];
-  selectedNote = undefined;
-  readingOffset = null;
-  clearReadingBoxes();
+  applyTarget(null); // 目标清除：标记、键盘反射与按钮状态随渲染重建（SPEC-PLAY-11 / 12 / 15）
   setMarkerClass(playingElements, 'abcdesk-playing', false);
-  readingElements = [];
   playingElements = [];
   followPaused = false;
   keyboardView.clearActivePitches(); // 换版 / 重渲染清除键盘动态提示（SPEC-STATE-03）
-  keyboardView.clearPointedPitches(); // 换版 / 重渲染清除查阅 / 点选反射（SPEC-PLAY-15）
-  updatePlayFromHereButton();
 }
 
 /** 给元素批量加 / 去标记类（SPEC-PLAY-11）；CSS 负责呈现，移除类即恢复原样式。 */
@@ -306,6 +305,22 @@ function sourceRangesOf(event: NoteTimingEvent): Array<{ start: number; end: num
   return ranges;
 }
 
+/**
+ * 回传当前目标的源码区间（SPEC-PLAY-11）：宿主据此同步编辑器侧轮廓标记；
+ * 联动停用（有待更新 / 旧谱参考）时跳过——宿主在内容变化时已清除轮廓，避免套用旧映射。
+ */
+function syncTargetSourceRanges(ranges: SourceHighlightRange[]): void {
+  if (linkageUnavailableReason() !== undefined) {
+    return;
+  }
+  const serialized = JSON.stringify(ranges);
+  if (serialized === sentTargetRanges) {
+    return;
+  }
+  sentTargetRanges = serialized;
+  host.postMessage({ type: 'target-ranges', ranges });
+}
+
 /** 联动是否处于停用窗口（SPEC-PLAY-11）：有待应用的新版本或当前为旧谱参考时不可定位 / 起播。 */
 function linkageUnavailableReason(): 'update-pending' | 'stale-score' | undefined {
   if (pendingDocument !== undefined) {
@@ -317,20 +332,17 @@ function linkageUnavailableReason(): 'update-pending' | 'stale-score' | undefine
   return undefined;
 }
 
-/** 点击谱面音符（SPEC-PLAY-11）：选中并请求源码定位，焦点留在预览、不改变播放位置、不额外发声。 */
+/** 点击谱面音符（SPEC-PLAY-11 / 12）：设为目标并请求源码定位，焦点留在预览、不改变播放位置、不额外发声。 */
 function handleScoreClick(abcElem: AbcElem): void {
   const startChar = abcElem.startChar;
   const endChar = abcElem.endChar;
   if (abcElem.el_type !== 'note' || startChar === undefined || endChar === undefined) {
-    // 点到非音符元素（小节线、谱号等）：清除所选音符与键盘反射，不请求定位（无有效映射）
-    selectedNote = undefined;
-    keyboardView.clearPointedPitches();
-    updatePlayFromHereButton();
+    // 点到非音符元素（小节线、谱号等）：清除目标（标记、键盘反射与按钮同步），不请求定位（无有效映射）
+    applyTarget(null);
     return;
   }
-  selectedNote = { startChar, endChar };
-  updatePlayFromHereButton();
-  reflectPointedPitches(startChar); // 点选反射（SPEC-PLAY-15）：与查阅标记共用同一映射
+  // 点选加入目标（SPEC-PLAY-11 / 12）：与查阅光标共用同一目标，后发生者胜
+  applyTarget(startChar);
   const unavailable = linkageUnavailableReason();
   if (unavailable !== undefined) {
     host.postMessage({ type: 'linkage-unavailable', reason: unavailable });
@@ -359,46 +371,82 @@ function startFromCursor(offset: number): void {
   playFromOffset(offset);
 }
 
-/** 从预览所选音符起播（SPEC-PLAY-12）：只取预览内的选择，不借用一旁源码的光标。 */
-function startFromSelection(): void {
-  if (selectedNote === undefined) {
+/** 从当前目标音符起播（SPEC-PLAY-12 / CMD-08）：目标由点选或查阅维护，无目标时回原因说明。 */
+function startFromTarget(): void {
+  if (targetOffset === null) {
     const unavailable = linkageUnavailableReason();
     host.postMessage({ type: 'linkage-unavailable', reason: unavailable ?? 'no-selection' });
     return;
   }
-  playFromOffset(selectedNote.startChar);
+  playFromOffset(targetOffset);
 }
 
 /**
- * 查阅标记（SPEC-PLAY-11）：以音符包围虚线框突出光标对应音符，必要时滚动使其可见；
- * 播放中只更新标记、不抢播放跟随的滚动，也不改变音乐。
+ * 查阅光标（SPEC-PLAY-11 / 12）：命中音符时成为当前目标；离开音符 / 位于其他曲目时清除目标，
+ * 不自动切曲、不套用当前曲目的映射。
  */
 function applyReadingMarker(offset: number | null): void {
-  clearReadingBoxes();
-  readingElements = [];
-  readingOffset = offset;
-  if (offset === null) {
-    keyboardView.clearPointedPitches();
-    return;
-  }
-  const event = findTimingEvent(offset);
+  applyTarget(offset !== null && findTimingEvent(offset) !== undefined ? offset : null);
+}
+
+/**
+ * 设定 / 清除当前目标音符（SPEC-PLAY-11 / 12 / 15）：预览点选与源码光标命中维护同一目标，
+ * 后发生者胜；填充与包围虚线框、键盘反射与"从此处播放"可用性随目标同步。
+ * 偏移无可靠映射（如旧谱参考、点选后等待重渲染）时不呈现标记、保留目标，由按钮说明原因。
+ */
+function applyTarget(offset: number | null): void {
+  clearTargetMarks();
+  targetOffset = offset;
+  const event = offset === null ? undefined : findTimingEvent(offset);
+  // 编辑器侧轮廓随目标同步（SPEC-PLAY-11）：宿主按区间回传绘制轮廓，目标清除时回传空数组
+  syncTargetSourceRanges(event === undefined ? [] : sourceRangesOf(event));
   if (event === undefined) {
     keyboardView.clearPointedPitches();
+    updatePlayFromHereButton();
     return;
   }
-  // 键盘反射（SPEC-PLAY-15）：与查阅标记同一映射，以查阅色突出对应琴键
-  keyboardView.setPointedPitches(collectPitches([event]));
-  readingElements = elementsOf(event);
+  targetElements = elementsOf(event);
+  setMarkerClass(targetElements, 'abcdesk-target', true);
   drawReadingBoxes(event);
+  // 键盘反射（SPEC-PLAY-15）：与目标共用同一映射，以查阅色突出对应琴键
+  keyboardView.setPointedPitches(collectPitches([event]));
+  updatePlayFromHereButton();
   if (controller.getStatus().phase !== 'playing') {
-    scrollIntoViewIfNeeded(readingElements);
+    // 目标不可见时带进视野；播放中只更新标记、不抢播放跟随的滚动（SPEC-PLAY-11）
+    scrollIntoViewIfNeeded(targetElements);
   }
 }
 
-/** 点选反射（SPEC-PLAY-15）：偏移命中音符时突出对应琴键，无映射时清除。 */
-function reflectPointedPitches(offset: number): void {
-  const event = findTimingEvent(offset);
-  keyboardView.setPointedPitches(event === undefined ? [] : collectPitches([event]));
+/**
+ * 清除旧目标标记（SPEC-PLAY-11 / 12）：填充、包围虚线框与元素引用一并清；
+ * abcjs 原生选中由点选自行添加、不会随目标移动移除，而且不止类：原生点选把填充色直接写进音符的
+ * presentation 属性，类移除后该属性仍生效——一并按渲染快照还原，旧音符不留任何残留。
+ */
+function clearTargetMarks(): void {
+  clearReadingBoxes();
+  for (const element of scoreElement.querySelectorAll('.abcdesk-target, .abcjs-note_selected')) {
+    element.classList.remove('abcdesk-target', 'abcjs-note_selected');
+    restoreNativePaint(element);
+  }
+  targetElements = [];
+}
+
+/** 记录谱面元素的原始 fill 属性（SPEC-PLAY-11）：渲染成功后、任何点选发生前调用。 */
+function snapshotNativePaint(): void {
+  nativeFillSnapshot = new WeakMap();
+  for (const element of scoreElement.querySelectorAll('*')) {
+    nativeFillSnapshot.set(element, element.getAttribute('fill'));
+  }
+}
+
+/** 还原 abcjs 原生点选覆写的 fill 属性（SPEC-PLAY-11）：快照缺记（渲染后新增元素）时视为原本无该属性。 */
+function restoreNativePaint(element: Element): void {
+  const fill = nativeFillSnapshot.get(element);
+  if (fill === null || fill === undefined) {
+    element.removeAttribute('fill');
+  } else {
+    element.setAttribute('fill', fill);
+  }
 }
 
 /** 移除全部查阅框（SPEC-PLAY-11）。 */
@@ -435,14 +483,14 @@ function drawReadingBoxes(event: NoteTimingEvent): void {
 }
 
 /**
- * 面板尺寸变化后重绘查阅框（SPEC-PLAY-11）：abcjs 响应式模式按容器宽度纯 CSS 缩放
+ * 面板尺寸变化后重绘目标虚线框（SPEC-PLAY-11）：abcjs 响应式模式按容器宽度纯 CSS 缩放
  * SVG 而不重排版，覆盖层的像素几何需按当前元素重新测量，否则会漂离音符。
  */
 function refreshReadingBoxes(): void {
-  if (readingOffset === null) {
+  if (targetOffset === null) {
     return;
   }
-  const event = findTimingEvent(readingOffset);
+  const event = findTimingEvent(targetOffset);
   if (event === undefined) {
     return;
   }
@@ -558,20 +606,17 @@ function updateFollowResumeButton(): void {
 }
 
 /**
- * "从此处播放"按钮（SPEC-PLAY-12）：对预览所选音符起播，与命令共用宿主路径；
- * 未点选音符、有待更新或旧谱参考时禁用，原因经包裹元素提示（禁用按钮自身不触发悬停提示）。
+ * "从此处播放"按钮（SPEC-PLAY-12）：对当前目标音符起播，与命令共用宿主路径；
+ * 无目标音符、有待更新或旧谱参考时禁用，原因经包裹元素提示（禁用按钮自身不触发悬停提示）；
+ * 原因按实际停用状态取：联动停用优先于无目标提示。
  */
 function updatePlayFromHereButton(): void {
   const label = t('play-from-here');
   playFromHereButton.textContent = label;
   playFromHereButton.setAttribute('aria-label', label);
-  const unavailable = linkageUnavailableReason();
-  let reason: string | undefined;
-  if (selectedNote === undefined) {
-    reason = t('select-note-first');
-  } else if (unavailable !== undefined) {
-    reason = t(unavailable);
-  }
+  const reasonKey =
+    linkageUnavailableReason() ?? (targetOffset === null ? 'select-note-first' : undefined);
+  const reason = reasonKey === undefined ? undefined : t(reasonKey);
   playFromHereButton.disabled = reason !== undefined;
   if (reason === undefined) {
     playFromHereWrap.removeAttribute('title');
@@ -607,7 +652,7 @@ window.addEventListener('message', (event: MessageEvent) => {
     return;
   }
   if (message.type === 'play-from-selection') {
-    startFromSelection();
+    startFromTarget();
     return;
   }
   switch (message.action) {

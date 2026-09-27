@@ -147,8 +147,8 @@ function playFromCursorCommand(previews: PreviewPanelManager): void {
 }
 
 /**
- * "从所选音符播放"命令（SPEC-CMD-08）：只取当前预览的有效音符选择与起播映射，
- * 不借用一旁源码的光标；无预览内选择时由预览面板回原因说明（SPEC-PLAY-12）。
+ * "从所选音符播放"命令（SPEC-CMD-08）：取预览内的当前目标音符（谱面点选或源码光标
+ * 命中维护的同一目标）与起播映射；无预览 / 无目标时由预览面板回原因说明（SPEC-PLAY-12）。
  */
 function playFromSelectedNoteCommand(previews: PreviewPanelManager): void {
   const document = resolveControlTarget(previews);

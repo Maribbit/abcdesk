@@ -101,7 +101,7 @@ describe('消息桥校验（SPEC-ENV-04）', () => {
     });
   });
 
-  it('[SPEC-ENV-04] reveal-range / linkage-unavailable / source-highlight 校验：偏移为字符偏移、原因限登记枚举、高亮区间有上限', () => {
+  it('[SPEC-ENV-04] reveal-range / linkage-unavailable / source-highlight / target-ranges 校验：偏移为字符偏移、原因限登记枚举、区间数组有上限', () => {
     // 点击定位请求：start / end 为非负整数
     expect(parseWebviewMessage({ type: 'reveal-range', start: 8, end: 10 })).toEqual({
       type: 'reveal-range',
@@ -147,6 +147,21 @@ describe('消息桥校验（SPEC-ENV-04）', () => {
         ranges: Array.from({ length: 17 }, (_, index) => ({ start: index, end: index + 1 })),
       }),
     ).toBeUndefined();
+
+    // 目标轮廓回传（SPEC-PLAY-11）：空数组 = 清除，非法项与超限拒绝，额外字段丢弃
+    expect(parseWebviewMessage({ type: 'target-ranges', ranges: [] })).toEqual({
+      type: 'target-ranges',
+      ranges: [],
+    });
+    expect(parseWebviewMessage({ type: 'target-ranges', ranges: [{ start: 3, end: 7 }] })).toEqual({
+      type: 'target-ranges',
+      ranges: [{ start: 3, end: 7 }],
+    });
+    expect(
+      parseWebviewMessage({ type: 'target-ranges', ranges: [{ start: 3, end: 7, extra: true }] }),
+    ).toEqual({ type: 'target-ranges', ranges: [{ start: 3, end: 7 }] });
+    expect(parseWebviewMessage({ type: 'target-ranges', ranges: [{ start: 3 }] })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'target-ranges' })).toBeUndefined();
   });
 
   it('[SPEC-ENV-04] 宿主联动消息校验：cursor 允许 null 清除、play-from-cursor 需要字符偏移、play-from-selection 无载荷', () => {
