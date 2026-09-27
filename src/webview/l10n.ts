@@ -35,6 +35,18 @@ const EN: Record<string, string> = {
   'keyboard-out-of-range': 'Some notes are outside A0–C8; no key hints for them.',
   'keyboard-hint-left': 'A hint note is to the left',
   'keyboard-hint-right': 'A hint note is to the right',
+  'speed-label': 'Speed',
+  'speed-reset': 'Reset to 100%',
+  'speed-hint-beat': 'Quarter note = {0}',
+  'progress-label': 'Progress',
+  'voices-summary': 'Voices',
+  'voices-summary-muted': '{0} voice(s) muted',
+  'voices-summary-chords': 'chords muted',
+  'voices-summary-voices-and-chords': '{0} voice(s) and chords muted',
+  'voices-pause-adjust': 'Pause to adjust voices',
+  'voice-label': 'Voice {0}',
+  'voices-chords': 'Auto chords',
+  'applying-speed': 'Applying speed…',
 };
 
 const ZH_CN: Record<string, string> = {
@@ -66,6 +78,18 @@ const ZH_CN: Record<string, string> = {
   'keyboard-out-of-range': '有音符超出 A0–C8，未显示对应按键提示。',
   'keyboard-hint-left': '左侧有提示音',
   'keyboard-hint-right': '右侧有提示音',
+  'speed-label': '速度',
+  'speed-reset': '恢复原速',
+  'speed-hint-beat': '四分音符 = {0}',
+  'progress-label': '进度',
+  'voices-summary': '声部',
+  'voices-summary-muted': '已静音 {0} 个声部',
+  'voices-summary-chords': '已静音和弦伴奏',
+  'voices-summary-voices-and-chords': '已静音 {0} 个声部与和弦伴奏',
+  'voices-pause-adjust': '暂停以调整声部',
+  'voice-label': '声部 {0}',
+  'voices-chords': '和弦伴奏',
+  'applying-speed': '正在应用速度…',
 };
 
 export function t(key: string): string {

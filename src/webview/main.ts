@@ -1,8 +1,9 @@
 import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from 'abcjs';
 import { parseHostMessage, type DocumentMessage, type SourceHighlightRange } from '../core/messages';
-import { PlaybackController } from './audio';
+import { PlaybackController, type PlaybackPhase } from './audio';
 import { KeyboardView, collectPitches } from './keyboard';
 import { t } from './l10n';
+import { SPEED_DEFAULT, formatClock, parseSpeedPercent, type VoiceEntry } from './playback';
 
 /**
  * 播放器 webview 入口（M0：渲染管线、播放主干、编辑更新管线与源码联动）。
@@ -24,6 +25,10 @@ import { t } from './l10n';
  * - 键盘默认按当前曲目材料音域（至少两个八度）、可切换完整 88 键与手动收起；
  *   播放高亮跟随演奏时间（含静音声部），视口外的提示音只显示方向箭头；
  * - 目标音符以查阅色反射到键盘（SPEC-PLAY-15），随目标一同清除。
+ * 播放控件（SPEC-PLAY-04 / 05 / 06，实现于 webview、不新增消息）：
+ * - 速度提交后经重建保持乐曲位置（播放中短暂缓冲后继续），恢复原速入口与带拍提示随动；
+ * - 进度条拖动只预览、松手提交一次定位，停止 / 换版等状态变化时的后到提交丢弃，键盘步进即时定位；
+ * - 声部菜单播放中只可查看并引导先暂停，静音经重建生效、不自动续播；和弦伴奏独立开关。
  */
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
@@ -49,6 +54,18 @@ const revealSourceButton = queryElement<HTMLButtonElement>('reveal-source');
 const followResumeButton = queryElement<HTMLButtonElement>('follow-resume');
 const playFromHereWrap = queryElement('play-from-here-wrap');
 const playFromHereButton = queryElement<HTMLButtonElement>('play-from-here');
+const speedLabelElement = queryElement('speed-label');
+const speedInputElement = queryElement<HTMLInputElement>('speed-input');
+const speedResetButton = queryElement<HTMLButtonElement>('speed-reset');
+const speedHintElement = queryElement('speed-hint');
+const voicesMenuElement = queryElement<HTMLDetailsElement>('voices-menu');
+const voicesSummaryElement = queryElement('voices-summary');
+const voicesPauseButton = queryElement<HTMLButtonElement>('voices-pause');
+const voicesListElement = queryElement('voices-list');
+const progressElement = queryElement('progress');
+const progressFillElement = queryElement('progress-fill');
+const progressThumbElement = queryElement('progress-thumb');
+const progressTimeElement = queryElement('progress-time');
 
 /** 播放中到达、待统一应用的最新文档（SPEC-STATE-07）。 */
 let pendingDocument: DocumentMessage | undefined;
@@ -74,12 +91,31 @@ let sentTargetRanges: string | undefined;
 let playingElements: SVGElement[] = [];
 /** 播放中用户手动滚动谱面后暂停自动跟随（SPEC-PLAY-11）；停止或换版时重置。 */
 let followPaused = false;
+/** 渲染版本序号（SPEC-PLAY-05）：拖动进度期间版本失效（换版）时丢弃后到的提交。 */
+let renderSequence = 0;
+/** 声部菜单结构签名与行输入框（SPEC-PLAY-06）：结构变化才重建行，勾选与刷新不丢焦点。 */
+let voicesStructureSignature: string | undefined;
+let voiceInputs: HTMLInputElement[] = [];
+let chordsInput: HTMLInputElement | undefined;
+/** 进度拖动（SPEC-PLAY-05）：相位与版本序号用于提交校验（停止 / 换版等场景丢弃）。 */
+type ProgressDrag = { fraction: number; phase: PlaybackPhase; sequence: number };
+let dragState: ProgressDrag | undefined;
+/** 播放中的进度轮询计时器（SPEC-PLAY-05）：非播放相位停止，不空转。 */
+let progressTimer: number | undefined;
 
 // 宿主注入的配置（previewPanel 以 nonce 脚本写入）：本地音色根地址（SPEC-ENV-05 / 07）
 const webviewConfig = (window as unknown as { __abcdesk?: { soundfontUrl?: unknown } }).__abcdesk;
 const soundfontUrl = typeof webviewConfig?.soundfontUrl === 'string' ? webviewConfig.soundfontUrl : undefined;
 
-const controller = new PlaybackController({ soundfontUrl }, refreshPlaybackUi, applyPlayingHighlight);
+const controller = new PlaybackController(
+  { soundfontUrl },
+  refreshPlaybackUi,
+  applyPlayingHighlight,
+  // 变速后事件毫秒数随新时序缩放（SPEC-PLAY-04）：重取时序刷新字符↔音符映射与“从此处播放”依据
+  () => {
+    timingEvents = controller.getTimings();
+  },
+);
 
 /** 键盘可视化（SPEC-PLAY-08 / 09）：音域 / 收起两态独立，动态高亮由播放事件驱动。 */
 const keyboardSection = queryElement('keyboard');
@@ -117,8 +153,168 @@ function refreshPlaybackUi(): void {
   stopButton.setAttribute('aria-label', t('stop'));
   playbackStatusElement.textContent = statusKey === null ? '' : t(statusKey);
   updateFollowResumeButton();
+  updateSpeedUi();
+  updateVoicesUi();
+  updateProgressUi();
+  updateProgressPolling();
   // 宿主据此维持同一窗口内只有一处预览发声（SPEC-PLAY-01）
   host.postMessage({ type: 'playback-state', state: phase });
+}
+
+/** 速度控件刷新（SPEC-PLAY-04）：标签与当前值；输入框聚焦时不覆写正在编辑的内容。 */
+function updateSpeedUi(): void {
+  const speed = controller.getSpeed();
+  speedLabelElement.textContent = t('speed-label');
+  speedResetButton.textContent = t('speed-reset');
+  speedResetButton.setAttribute('aria-label', t('speed-reset'));
+  speedResetButton.disabled = speed === SPEED_DEFAULT;
+  if (document.activeElement !== speedInputElement) {
+    speedInputElement.value = String(speed);
+  }
+  const hint = controller.getBeatHint();
+  speedHintElement.hidden = hint === null;
+  speedHintElement.textContent = hint === null ? '' : t('speed-hint-beat').replace('{0}', String(hint));
+}
+
+/** 提交速度输入（SPEC-PLAY-04）：合法则应用并回写规范值，空值 / 非数字还原当前值（P06 口径）。 */
+function commitSpeedInput(): void {
+  const parsed = parseSpeedPercent(speedInputElement.value);
+  if (parsed === null) {
+    speedInputElement.value = String(controller.getSpeed());
+    return;
+  }
+  controller.setSpeed(parsed);
+  speedInputElement.value = String(controller.getSpeed()); // 夹取 / 取整后的规范值回写
+}
+
+/** 声部菜单刷新（SPEC-PLAY-06）：结构未变只更新勾选与可调性；播放中先暂停再调整。 */
+function updateVoicesUi(): void {
+  const voices = controller.getVoices();
+  const hasChords = controller.hasChordAccompaniment();
+  const playing = controller.getStatus().phase === 'playing';
+  const signature = JSON.stringify([voices.map((voice) => [voice.index, voice.name]), hasChords]);
+  if (signature !== voicesStructureSignature) {
+    voicesStructureSignature = signature;
+    rebuildVoicesList(voices, hasChords);
+  }
+  for (let index = 0; index < voiceInputs.length; index += 1) {
+    voiceInputs[index].checked = voices[index]?.muted ?? false;
+    voiceInputs[index].disabled = playing;
+  }
+  if (chordsInput !== undefined) {
+    chordsInput.checked = controller.getChordsMuted();
+    chordsInput.disabled = playing;
+  }
+  voicesMenuElement.hidden = voices.length === 0 && !hasChords;
+  voicesPauseButton.hidden = !playing;
+  // 菜单关闭时的静音摘要（SPEC-PLAY-06）：无静音显示“声部”，有静音时替换为摘要
+  const mutedCount = voices.filter((voice) => voice.muted).length;
+  const chordsMuted = controller.getChordsMuted();
+  let summary: string;
+  if (mutedCount > 0 && chordsMuted) {
+    summary = t('voices-summary-voices-and-chords').replace('{0}', String(mutedCount));
+  } else if (mutedCount > 0) {
+    summary = t('voices-summary-muted').replace('{0}', String(mutedCount));
+  } else if (chordsMuted) {
+    summary = t('voices-summary-chords');
+  } else {
+    summary = t('voices-summary');
+  }
+  voicesSummaryElement.textContent = summary;
+}
+
+/** 重建声部菜单行（SPEC-PLAY-06）：声部按清单顺序，自动和弦伴奏行为独立开关（存在时）。 */
+function rebuildVoicesList(voices: Array<VoiceEntry & { muted: boolean }>, hasChords: boolean): void {
+  voicesListElement.textContent = '';
+  voiceInputs = [];
+  chordsInput = undefined;
+  for (const voice of voices) {
+    const label = voice.name ?? t('voice-label').replace('{0}', String(voice.index + 1));
+    voiceInputs.push(
+      appendVoiceRow(label, voice.muted, (input) => controller.setVoiceMuted(voice.index, input.checked)),
+    );
+  }
+  if (hasChords) {
+    chordsInput = appendVoiceRow(t('voices-chords'), controller.getChordsMuted(), (input) =>
+      controller.setChordsMuted(input.checked),
+    );
+  }
+}
+
+/** 生成一行声部开关（整行可点）；返回输入框供刷新勾选与可调性。 */
+function appendVoiceRow(
+  labelText: string,
+  checked: boolean,
+  onToggle: (input: HTMLInputElement) => void,
+): HTMLInputElement {
+  const row = document.createElement('div');
+  row.className = 'abcdesk-voice-row';
+  const label = document.createElement('label');
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  input.addEventListener('change', () => onToggle(input));
+  const text = document.createElement('span');
+  text.textContent = labelText;
+  label.append(input, text);
+  row.appendChild(label);
+  voicesListElement.appendChild(row);
+  return input;
+}
+
+/** 进度显示刷新（SPEC-PLAY-05）：拖动预览期间不拉回实际位置。 */
+function updateProgressUi(): void {
+  if (dragState !== undefined) {
+    return;
+  }
+  const { positionMs, totalMs } = controller.getProgress();
+  renderProgress(positionMs, totalMs);
+}
+
+/** 按位置与总长刷新滑块、填充与时间标签（可见文本与 aria-valuetext 同源）。 */
+function renderProgress(positionMs: number, totalMs: number): void {
+  const fraction = totalMs > 0 ? Math.min(1, Math.max(0, positionMs / totalMs)) : 0;
+  progressFillElement.style.width = `${fraction * 100}%`;
+  progressThumbElement.style.left = `${fraction * 100}%`;
+  progressElement.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+  const text = `${formatClock(positionMs)} / ${formatClock(totalMs)}`;
+  progressElement.setAttribute('aria-valuetext', text);
+  progressTimeElement.textContent = text;
+}
+
+/** 播放中每 250ms 刷新进度与时间标签（SPEC-PLAY-05）；非播放相位停止轮询，不空转。 */
+function updateProgressPolling(): void {
+  const playing = controller.getStatus().phase === 'playing';
+  if (playing && progressTimer === undefined) {
+    progressTimer = window.setInterval(updateProgressUi, 250);
+  } else if (!playing && progressTimer !== undefined) {
+    window.clearInterval(progressTimer);
+    progressTimer = undefined;
+  }
+}
+
+/** 指针横坐标 → 乐曲比例。 */
+function progressFractionFromPointer(clientX: number): number {
+  const rect = progressElement.getBoundingClientRect();
+  if (rect.width <= 0) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+}
+
+/** 拖动预览显示（SPEC-PLAY-05）：只改显示，不发声、不改播放状态。 */
+function previewDrag(fraction: number): void {
+  const { totalMs } = controller.getProgress();
+  renderProgress(Math.round(totalMs * fraction), totalMs);
+}
+
+/** 提交拖动定位（SPEC-PLAY-05）：换版或相位已变（停止 / 自然结束 / 接替）时丢弃，不套用到新状态。 */
+function commitDrag(drag: ProgressDrag): void {
+  const stale = controller.getStatus().phase !== drag.phase || renderSequence !== drag.sequence;
+  if (!stale) {
+    controller.seekToFraction(drag.fraction);
+  }
+  updateProgressUi();
 }
 
 /** 应用缓存的最新版本：渲染与换版归零（SPEC-STATE-07），不自动起播；上报结果供宿主解除联动停用（SPEC-PLAY-11）。 */
@@ -164,6 +360,7 @@ function showEmptyState(): void {
 /** 渲染宿主推送的文档；返回渲染是否成功（SPEC-CMD-07 的待起播请求据此执行）。 */
 function renderDocument(message: DocumentMessage): boolean {
   // 来源文件名与“尚未保存”标记由预览标签标题显示（SPEC-CMD-06），webview 内不重复呈现
+  renderSequence += 1; // 版本推进：拖动中的进度提交据此丢弃（SPEC-PLAY-05）
 
   // 联动状态随渲染重建（SPEC-PLAY-11）：映射、选中与旧标记引用全部清空，成功后再建立新映射
   resetLinkageState();
@@ -676,11 +873,103 @@ playFromHereButton.addEventListener('click', () =>
 );
 // 空状态"转到源码编辑"入口（SPEC-STATE-05）：请求宿主打开来源文档并转移焦点
 revealSourceButton.addEventListener('click', () => host.postMessage({ type: 'reveal-source' }));
-// "恢复跟随"（SPEC-PLAY-11）：立即回到当前播放位置并恢复自动跟随
+// “恢复跟随”（SPEC-PLAY-11）：立即回到当前播放位置并恢复自动跟随
 followResumeButton.addEventListener('click', () => {
   followPaused = false;
   updateFollowResumeButton();
   scrollIntoViewIfNeeded(playingElements);
+});
+
+// 速度控件（SPEC-PLAY-04 / P06）：Enter / 失焦 / 原生步进提交，Esc 取消编辑并还原当前值
+speedInputElement.addEventListener('change', commitSpeedInput);
+speedInputElement.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    commitSpeedInput();
+  } else if (event.key === 'Escape') {
+    speedInputElement.value = String(controller.getSpeed());
+  }
+});
+speedResetButton.addEventListener('click', () => controller.setSpeed(SPEED_DEFAULT));
+// 声部菜单（SPEC-PLAY-06）：播放中先暂停再调整
+voicesPauseButton.addEventListener('click', () => controller.pause());
+// 进度条（SPEC-PLAY-05）：拖动预览、松手提交；取消拖动（Esc / pointercancel）不提交
+progressElement.addEventListener('pointerdown', (event: PointerEvent) => {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault(); // 拖动不触发文本选择，焦点显式移到滑块（P06：方向键立即可用）
+  dragState = {
+    fraction: progressFractionFromPointer(event.clientX),
+    phase: controller.getStatus().phase,
+    sequence: renderSequence,
+  };
+  progressElement.setPointerCapture(event.pointerId);
+  progressElement.focus();
+  previewDrag(dragState.fraction);
+});
+progressElement.addEventListener('pointermove', (event: PointerEvent) => {
+  if (dragState === undefined) {
+    return;
+  }
+  dragState.fraction = progressFractionFromPointer(event.clientX);
+  previewDrag(dragState.fraction);
+});
+progressElement.addEventListener('pointerup', (event: PointerEvent) => {
+  const drag = dragState;
+  dragState = undefined;
+  if (drag === undefined) {
+    return;
+  }
+  if (progressElement.hasPointerCapture(event.pointerId)) {
+    progressElement.releasePointerCapture(event.pointerId);
+  }
+  commitDrag(drag);
+});
+progressElement.addEventListener('pointercancel', () => {
+  if (dragState === undefined) {
+    return;
+  }
+  dragState = undefined; // 取消拖动：不提交，显示回实际位置
+  updateProgressUi();
+});
+progressElement.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (dragState !== undefined) {
+    if (event.key === 'Escape') {
+      dragState = undefined;
+      updateProgressUi();
+      event.preventDefault();
+    }
+    return; // 拖动中由指针位置主导，不叠加键盘定位
+  }
+  const { positionMs, totalMs } = controller.getProgress();
+  const current = totalMs > 0 ? positionMs / totalMs : 0;
+  let next: number;
+  switch (event.key) {
+    case 'ArrowLeft':
+      next = current - 0.01;
+      break;
+    case 'ArrowRight':
+      next = current + 0.01;
+      break;
+    case 'PageDown':
+      next = current - 0.1;
+      break;
+    case 'PageUp':
+      next = current + 0.1;
+      break;
+    case 'Home':
+      next = 0;
+      break;
+    case 'End':
+      next = 1;
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+  controller.seekToFraction(next); // 键盘与点击同一提交路径（P06）：每次按键立即定位
+  updateProgressUi();
 });
 
 // 面板尺寸变化时谱面随容器宽度缩放（abcjs 响应式模式不重排版）：重绘覆盖层查阅框保持贴合（SPEC-PLAY-11）
@@ -699,7 +988,8 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
     return;
   }
   const target = event.target as HTMLElement | null;
-  if (target !== null && (target.closest('input, textarea, select') !== null || target.isContentEditable)) {
+  // 进度条上的 PageUp / PageDown / Home / End 属定位操作（SPEC-PLAY-05），不算手动滚动
+  if (target !== null && (target.closest('input, textarea, select, #progress') !== null || target.isContentEditable)) {
     return;
   }
   pauseFollowOnUserScroll();
@@ -711,15 +1001,25 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
     return;
   }
   const target = event.target as HTMLElement | null;
-  if (target !== null && (target.closest('button, input, textarea, select, a') !== null || target.isContentEditable)) {
+  // summary 属交互元素（SPEC-PLAY-06 菜单开关），空格保留原生展开 / 收起
+  if (target !== null && (target.closest('button, input, textarea, select, a, summary') !== null || target.isContentEditable)) {
     return;
   }
   event.preventDefault();
   controller.toggle();
 });
 
-// 面板销毁前立即停音（保留上下文时隐藏不会触发此处）
-window.addEventListener('pagehide', () => controller.dispose());
+// 面板销毁前立即停音并停止进度轮询（保留上下文时隐藏不会触发此处）
+window.addEventListener('pagehide', () => {
+  if (progressTimer !== undefined) {
+    window.clearInterval(progressTimer);
+    progressTimer = undefined;
+  }
+  controller.dispose();
+});
+
+// 进度条无障碍名称（SPEC-PLAY-05 / P06 口径）
+progressElement.setAttribute('aria-label', t('progress-label'));
 
 refreshPlaybackUi();
 updateContentStatus();

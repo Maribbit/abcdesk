@@ -26,8 +26,9 @@ import {
  * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
  * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点，来源标签关闭后按 URI 重新打开（SPEC-STATE-05 / CMD-12）。
  *
- * 键盘可视化在 webview 内实现（SPEC-PLAY-08 / 09）：宿主只提供 DOM 骨架与样式，
- * 音域 / 收起属会话内界面状态，不新增消息（跨会话恢复留待设置记忆批次，SPEC-SET-05）。
+ * 键盘可视化（SPEC-PLAY-08 / 09）与播放控件（速度 / 进度 / 声部，SPEC-PLAY-04 / 05 / 06）
+ * 均在 webview 内实现：宿主只提供 DOM 骨架与样式，界面状态不新增消息
+ * （跨会话恢复留待设置记忆批次，SPEC-SET-05）；进度条独占一行，支持拖动与键盘定位。
  * 布局形态：顶栏（播放控件）粘在预览顶部、键盘作为独立 dock 粘在底部（无多余按钮，形态对齐 chatmusic 调校版），
  * 长谱滚动时两者保持可见可点；低高度回退内容整体滚动、键盘回文档流（D0 低高度例外，阈值为暂订实测项）。
  */
@@ -688,6 +689,117 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     #follow-resume[hidden] { display: none; }
     #playback-status { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+    /* 速度控件（SPEC-PLAY-04）：数字输入 + 恢复原速；带拍提示仅在可可靠换算时显示 */
+    #speed-control { display: inline-flex; align-items: center; gap: 4px; }
+    #speed-control input {
+      font: inherit;
+      width: 4.5em;
+      padding: 3px 4px;
+      color: var(--vscode-input-foreground, var(--vscode-foreground));
+      background: var(--vscode-input-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, transparent));
+      border-radius: 2px;
+    }
+    #speed-control input:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    #speed-hint { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+    #speed-hint[hidden] { display: none; }
+    /* 恢复原速为弱化按钮：不抢播放 / 停止的视觉位置 */
+    #controls #speed-reset {
+      padding: 2px 6px;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      background: transparent;
+    }
+    #controls #speed-reset:hover { background: rgb(128 128 128 / 25%); }
+    #controls #speed-reset:disabled { background: transparent; }
+    /* 进度条独占一行（SPEC-PLAY-05）：细轨 + 圆点滑块，整行高度保证易点中 */
+    #progress-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; }
+    #progress { position: relative; flex: 1 1 auto; min-width: 120px; height: 18px; cursor: pointer; touch-action: none; }
+    #progress::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 4px;
+      transform: translateY(-50%);
+      border-radius: 2px;
+      background: var(--vscode-panel-border, rgb(128 128 128 / 40%));
+    }
+    #progress-fill {
+      position: absolute;
+      left: 0;
+      top: 50%;
+      height: 4px;
+      width: 0;
+      transform: translateY(-50%);
+      border-radius: 2px;
+      background: var(--vscode-progressBar-background, var(--vscode-button-background));
+    }
+    #progress-thumb {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      width: 12px;
+      height: 12px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: var(--vscode-progressBar-background, var(--vscode-button-background));
+      pointer-events: none;
+    }
+    #progress:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; border-radius: 2px; }
+    #progress-time {
+      flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    }
+    /* 声部菜单（SPEC-PLAY-06）：原生 details/summary，面板定位于触发钮下方、不挤压控件行 */
+    #voices-menu { position: relative; }
+    #voices-menu[hidden] { display: none; }
+    #voices-menu summary {
+      font: inherit;
+      list-style: none;
+      padding: 4px 10px;
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, transparent));
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    #voices-menu summary::-webkit-details-marker { display: none; }
+    #voices-menu summary::after { content: ' ▾'; }
+    #voices-menu[open] summary::after { content: ' ▴'; }
+    #voices-panel {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      z-index: 4;
+      min-width: 180px;
+      max-height: 40vh;
+      overflow-y: auto;
+      padding: 6px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, transparent));
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+    }
+    /* 播放中提示“暂停后可调整声部”（SPEC-PLAY-06）：点击即暂停，之后才能改声部 */
+    #voices-pause {
+      display: block;
+      width: 100%;
+      margin-bottom: 4px;
+      font: inherit;
+      padding: 3px 6px;
+      text-align: left;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      background: transparent;
+      border: none;
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    #voices-pause:hover { background: rgb(128 128 128 / 25%); }
+    #voices-pause[hidden] { display: none; }
+    .abcdesk-voice-row { padding: 3px 4px; white-space: nowrap; }
+    .abcdesk-voice-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
     /* 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 待更新提示，位于控制区下方 */
     #content-status {
       display: flex;
@@ -846,8 +958,29 @@ export class PreviewPanelManager implements vscode.Disposable {
     <div id="controls">
       <button id="play" type="button"></button>
       <button id="stop" type="button"></button>
+      <span id="speed-control">
+        <label id="speed-label" for="speed-input"></label>
+        <input id="speed-input" type="number" min="25" max="200" step="5" inputmode="numeric">
+        <span aria-hidden="true">%</span>
+        <button id="speed-reset" type="button"></button>
+        <span id="speed-hint" hidden></span>
+      </span>
+      <details id="voices-menu">
+        <summary id="voices-summary"></summary>
+        <div id="voices-panel">
+          <button id="voices-pause" type="button" hidden></button>
+          <div id="voices-list"></div>
+        </div>
+      </details>
       <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
       <span id="playback-status" role="status" aria-live="polite"></span>
+    </div>
+    <div id="progress-row">
+      <div id="progress" role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="progress-fill"></div>
+        <div id="progress-thumb"></div>
+      </div>
+      <span id="progress-time"></span>
     </div>
   </div>
   <div id="score-region">
