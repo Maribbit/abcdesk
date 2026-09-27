@@ -14,6 +14,7 @@ import {
   clampSpeed,
   collectVoices,
   hasChordTrack,
+  pianoOnlyTuneView,
   type VoiceEntry,
 } from './playback';
 
@@ -27,7 +28,9 @@ import {
  *   setProgress + seek 成对完成定位（SPEC-PLAY-11 / 12；官方 SynthController 同款同步方式）；
  * - 浏览器要求用户与预览交互后才能恢复音频设备：未交互时提示"点击预览开始播放"、
  *   不因等待报超时，首次交互后自动继续仍然有效的起播（SPEC-PLAY-14）；
- * - 首版仅钢琴音色：音序映射统一为内置钢琴，绝不触发 abcjs 默认远程音色地址（SPEC-ENV-07）。
+ * - 首版仅钢琴音色：经播放视图把展开产物的乐器指令统一为钢琴（展开产物同时决定音色样本请求与
+ *   实际放置；原曲目对象保持材料指令供导出，SPEC-ENV-07 / EXP-05），音序映射再由
+ *   sequenceCallback 收口，绝不触发 abcjs 默认远程音色地址。
  *
  * 速度与静音（SPEC-PLAY-02 / 04 / 06）：
  * - 速度百分比为主控：时序按 warpedQpm 重建（事件毫秒数随速度缩放）、音频经顶层
@@ -704,7 +707,11 @@ export class PlaybackController {
     }
   }
 
-  /** 初始化合成器（首播准备与参数重建共用）：本地音色、静音参数与速度基准。 */
+  /**
+   * 初始化合成器（首播准备与参数重建共用）：本地音色、静音参数与速度基准。
+   * 乐器统一经 pianoOnlyTuneView 传入（SPEC-ENV-07）：合成器按展开产物的 instrument 请求音色样本，
+   * 视图让"请求集合"与"实际放置"一致为钢琴；原曲目对象不改（导出保留材料指令，SPEC-EXP-05）。
+   */
   private initSynth(
     tune: TuneObject,
     instance: MidiBuffer,
@@ -722,7 +729,7 @@ export class PlaybackController {
       options.chordsOff = true;
     }
     return instance.init({
-      visualObj: tune,
+      visualObj: pianoOnlyTuneView(tune),
       audioContext,
       // 速度基准（SPEC-PLAY-04）：顶层 millisecondsPerMeasure 控制渲染速度（与官方 setWarp 同款）
       millisecondsPerMeasure: this.warpedMillisecondsPerMeasure(tune),
@@ -972,7 +979,10 @@ export class PlaybackController {
   }
 }
 
-/** 首版仅钢琴音色（SPEC-ENV-07）：统一各声部乐器指令，不修改 ABC 材料本身。 */
+/**
+ * 音序映射收口（SPEC-ENV-07）：展开产物已由 pianoOnlyTuneView 统一为钢琴（数字索引），
+ * 这里对最终音序再统一一次（映射中的 instrument 为音色名），防任何展开遗漏。
+ */
 function forcePianoInstrument(noteMapTracks: NoteMapTrack[]): NoteMapTrack[] {
   for (const track of noteMapTracks) {
     for (const note of track) {

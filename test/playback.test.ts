@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { parseOnly, type AbcElem } from 'abcjs';
+import { parseOnly, type AbcElem, type AudioTracks } from 'abcjs';
 import { describe, expect, it } from 'vitest';
 import {
   SPEED_DEFAULT,
@@ -11,6 +11,7 @@ import {
   formatClock,
   hasChordTrack,
   parseSpeedPercent,
+  pianoOnlyTuneView,
 } from '../src/webview/playback';
 
 // 绑定见 docs/spec/play.md（PLAY-04 速度、PLAY-05 进度、PLAY-06 声部）；
@@ -218,5 +219,38 @@ describe('09 原创曲目：多声部与混合拍号回归', () => {
       expect(notes.length).toBeGreaterThan(0);
       expect(notes.some((note) => note.volume > 0)).toBe(index === 0 || index === 3);
     });
+  });
+});
+
+// 播放侧音色问题回归（SPEC-ENV-07）：本地仅内置钢琴目录，合成器在 init 内部按展开产物的
+// instrument 请求音色样本、放置时静默跳过缺失音色——只改音序映射（sequenceCallback）不够，
+// 展开产物本身必须统一为钢琴，且原曲目对象保持材料指令（MIDI 导出依据，SPEC-EXP-05）。
+describe('统一钢琴的播放视图（SPEC-ENV-07）', () => {
+  /** 各轨首个 program 事件的乐器索引（音乐轨必有）；无 program 轨为 null。 */
+  function trackInstruments(audio: AudioTracks): Array<number | null> {
+    return audio.tracks.map((track) => {
+      const program = track.find((item) => item.cmd === 'program');
+      return program && program.cmd === 'program' ? program.instrument : null;
+    });
+  }
+
+  it('[SPEC-ENV-07] 展开产物的乐器指令全部归一为钢琴，原曲目对象保持材料指令', () => {
+    // 03 的声部内 %%MIDI program（钢琴外音色）与 09 的曲首 %%MIDI program 73 是两条已知归宿路径
+    for (const name of ['03-voices-midi.abc', '09-lanterns-on-the-tide.abc']) {
+      const source = readFileSync(new URL(`../samples/${name}`, import.meta.url), 'utf8');
+      const tune = parseOnly(source)[0];
+      const original = trackInstruments(tune.setUpAudio({}));
+      expect(original.some((instrument) => instrument !== 0)).toBe(true);
+      const flattened = pianoOnlyTuneView(tune).setUpAudio({});
+      for (const track of flattened.tracks) {
+        for (const item of track) {
+          if ('instrument' in item) {
+            expect(item.instrument).toBe(0);
+          }
+        }
+      }
+      // 播放视图不得改动原曲目：材料中的乐器指令原样保留
+      expect(trackInstruments(tune.setUpAudio({}))).toEqual(original);
+    }
   });
 });

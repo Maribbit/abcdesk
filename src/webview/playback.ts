@@ -1,11 +1,13 @@
 /**
- * 播放控件的纯逻辑（SPEC-PLAY-04 / 05 / 06）：速度换算与解析、时间显示、
- * 声部清单与和弦轨识别、带拍换算提示。
+ * 播放控件的纯逻辑（SPEC-PLAY-04 / 05 / 06、SPEC-ENV-07）：速度换算与解析、时间显示、
+ * 声部清单与和弦轨识别、带拍换算提示、演奏视图的乐器统一。
  *
  * 全部为纯函数与结构类型（不 import abcjs 运行时，与 keyboard.ts 同先例），
  * 由 test/playback.test.ts 真实覆盖；PLAY 域为 manual 验证（登记见 docs/manual-checks.md），
  * 测试标题额外引用条目以便双向校验。
  */
+
+import type { AudioTracks, SynthOptions } from 'abcjs';
 
 /** 速度百分比范围、步进与默认值（SPEC-PLAY-04：默认 100%、范围 25%～200%）。 */
 export const SPEED_MIN = 25;
@@ -151,4 +153,37 @@ export function beatHintFor(tune: BeatHintSource, speedPercent: number): number 
     }
   }
   return Math.round((tune.getBpm() * speedPercent) / 100);
+}
+
+/** 钢琴在 General MIDI 乐器表中的编号（abcjs 展开产物按数字索引；0 即 acoustic_grand_piano）。 */
+const PIANO_PROGRAM = 0;
+
+/**
+ * 仅钢琴的播放视图（SPEC-ENV-07）：包装出以原曲目为原型的副本，只覆盖 setUpAudio，
+ * 把展开产物的乐器指令（program / note 事件的 instrument）统一为钢琴。
+ *
+ * 为什么在展开产物上统一：合成器的音色样本请求发生在 init 内部、按展开产物的 instrument
+ * 归组（早于 sequenceCallback 与缓冲生成），只改音序映射会造成"请求集合与实际放置"错配——
+ * 材料中的非钢琴指令（如 %%MIDI program 73）会请求本地不存在的音色目录、并在放置时被静默跳过。
+ * 为什么不改原曲目：MIDI 导出要求保留材料中的乐器指令（SPEC-EXP-05），原对象须保持原样；
+ * 视图其余方法（拍号 / 弱起 / 拍数等）经原型链沿用原对象。
+ */
+export function pianoOnlyTuneView<T extends { setUpAudio: (options: SynthOptions) => AudioTracks }>(
+  tune: T,
+): T {
+  const view = Object.create(tune) as T;
+  const originalSetUpAudio = tune.setUpAudio;
+  // 原展开方法经 this 读取曲目（formatting / lines），必须以原对象为 this 调用
+  view.setUpAudio = (options: SynthOptions): AudioTracks => {
+    const flattened = originalSetUpAudio.call(tune, options);
+    for (const track of flattened.tracks) {
+      for (const item of track) {
+        if ('instrument' in item) {
+          item.instrument = PIANO_PROGRAM;
+        }
+      }
+    }
+    return flattened;
+  };
+  return view;
 }

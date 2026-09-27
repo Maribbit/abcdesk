@@ -2,6 +2,12 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-09-27 仅钢琴音色的实现方式（播放视图包装展开产物）
+
+- 决策：SPEC-ENV-07 的“播放时统一钢琴音色”经**播放视图**实现：initSynth 向合成器传入 `pianoOnlyTuneView(tune)`——以 `Object.create(tune)` 为原型、只覆盖 `setUpAudio` 的视图，把展开产物中全部 program / note 事件的 instrument 统一为 0（钢琴）；`sequenceCallback` 的音序映射统一保留为收口。原曲目对象不被修改。
+- 理由：用户报告“静音部分声部后旋律 / 应答只有少量音符发声”。根因是 abcjs 的音色样本请求发生在 `init` 内部、按展开产物的 instrument 归组（早于 `sequenceCallback` 与缓冲生成），而本地仅内置钢琴目录：材料中的 `%%MIDI program`（03 的 1 / 33、09 的 73）让对应声部在 init 请求不存在的音色目录、并在放置（placeNote）时被静默跳过——只改音序映射会造成“请求集合与实际放置”错配（实测：03 全静默、09 静默 482/1344）。没有直接改写原曲目的 `formatting.midi` 与声部指令元素，是因为 MIDI 导出要求保留材料中的乐器指令（SPEC-EXP-05）；视图其余方法经原型链沿用，拍号 / 弱起 / 拍数行为不变。
+- 影响：playback.ts 新增 `pianoOnlyTuneView`；audio.ts 的 initSynth 改用视图、头注释与 sequenceCallback 注释更新；playback.test.ts 新增 03 / 09 回归（展开产物全钢琴 + 原对象保持材料指令）；manual-checks ENV-07 判据增补“全部音符发声、无 404”。
+
 ## 2026-09-27 播放控件速度 / 进度 / 声部的交互口径（P06 细化）
 
 - 决策：P06 三项细化与实现口径一次性确认（用户确认，四问均取推荐项）：
