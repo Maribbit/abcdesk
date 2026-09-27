@@ -18,7 +18,7 @@ import {
  * - 同一文档复用已有面板，不重复创建（SPEC-CMD-03）；
  * - webview 资源仅经 asWebviewUri 加载，CSP 只放行 nonce 自有脚本与扩展自有资源（SPEC-ENV-03 / 05）；
  * - 不信任 webview 消息，经 parseWebviewMessage 按类型与版本校验（SPEC-ENV-04）；
- * - 文档变化（含未保存修改）经防抖推送到对应预览；标题与状态行标明尚未保存的新文档（SPEC-CMD-06）；
+ * - 文档变化（含未保存修改）经防抖推送到对应预览；预览标签标题标明文件名与尚未保存的新文档（SPEC-CMD-06）；
  * - 播放中的换版与应用时机由 webview 按 SPEC-STATE-07 执行，宿主只负责推送最新版本；
  * - 播放类命令可按需显示预览并保留源码焦点，首次渲染成功后仅执行仍有效的起播请求（SPEC-CMD-07 / 09）；
  * - 文档变化到新版本渲染确认之间停用源码联动：不推送光标、不定位、不起播，并清除源码高亮（SPEC-PLAY-11）；
@@ -28,8 +28,8 @@ import {
  *
  * 键盘可视化在 webview 内实现（SPEC-PLAY-08 / 09）：宿主只提供 DOM 骨架与样式，
  * 音域 / 收起属会话内界面状态，不新增消息（跨会话恢复留待设置记忆批次，SPEC-SET-05）。
- * 布局形态：键盘作为独立 dock 粘在预览底部（无多余按钮，形态对齐 chatmusic 调校版），
- * 谱面在其上方区域内滚动；低高度回退内容整体滚动、键盘回文档流（D0 低高度例外，阈值为暂订实测项）。
+ * 布局形态：顶栏（播放控件）粘在预览顶部、键盘作为独立 dock 粘在底部（无多余按钮，形态对齐 chatmusic 调校版），
+ * 长谱滚动时两者保持可见可点；低高度回退内容整体滚动、键盘回文档流（D0 低高度例外，阈值为暂订实测项）。
  */
 
 /** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）。 */
@@ -637,27 +637,22 @@ export class PreviewPanelManager implements vscode.Disposable {
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
     }
-    #status {
+    /* 顶栏（SPEC-PLAY-13）：播放控件粘在预览顶部，长谱滚动时保持可见可点；键盘贴底、谱面在两者之间滚动。
+       文件名与“尚未保存”标记不在此重复：预览标签标题已含（SPEC-CMD-06） */
+    #topbar {
       flex: 0 0 auto;
       position: sticky;
       top: 0;
       z-index: 3;
       background: var(--vscode-editor-background);
-      padding: 6px 12px;
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
-      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
     #controls {
-      flex: 0 0 auto;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 8px;
       padding: 6px 12px;
-      border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
     /* 谱面区：flex 拉伸把键盘 dock 顶到视口底边（短文档也贴底）；滚动仍走整页 */
     #score-region {
@@ -841,12 +836,13 @@ export class PreviewPanelManager implements vscode.Disposable {
   </style>
 </head>
 <body>
-  <div id="status"></div>
-  <div id="controls">
-    <button id="play" type="button"></button>
-    <button id="stop" type="button"></button>
-    <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
-    <span id="playback-status" role="status" aria-live="polite"></span>
+  <div id="topbar">
+    <div id="controls">
+      <button id="play" type="button"></button>
+      <button id="stop" type="button"></button>
+      <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
+      <span id="playback-status" role="status" aria-live="polite"></span>
+    </div>
   </div>
   <div id="score-region">
     <div id="content-status" role="status" aria-live="polite" hidden>

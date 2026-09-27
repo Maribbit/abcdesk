@@ -7,7 +7,6 @@
  */
 
 const EN: Record<string, string> = {
-  unsaved: 'Unsaved',
   'render-failed': 'Could not render the score. The ABC source may contain errors.',
   play: 'Play',
   pause: 'Pause',
@@ -39,7 +38,6 @@ const EN: Record<string, string> = {
 };
 
 const ZH_CN: Record<string, string> = {
-  unsaved: '尚未保存',
   'render-failed': '无法渲染谱面。ABC 源码可能包含错误。',
   play: '播放',
   pause: '暂停',

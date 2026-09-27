@@ -38,7 +38,7 @@ function queryElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
-const statusElement = queryElement('status');
+const topbarElement = queryElement('topbar');
 const scoreElement = queryElement('score');
 const playButton = queryElement<HTMLButtonElement>('play');
 const stopButton = queryElement<HTMLButtonElement>('stop');
@@ -161,10 +161,7 @@ function showEmptyState(): void {
 
 /** 渲染宿主推送的文档；返回渲染是否成功（SPEC-CMD-07 的待起播请求据此执行）。 */
 function renderDocument(message: DocumentMessage): boolean {
-  // 状态行：文件名 + 仅新文档的尚未保存标记（SPEC-CMD-06）
-  statusElement.textContent = message.isUntitled
-    ? `${message.fileName} · ${t('unsaved')}`
-    : message.fileName;
+  // 来源文件名与“尚未保存”标记由预览标签标题显示（SPEC-CMD-06），webview 内不重复呈现
 
   // 联动状态随渲染重建（SPEC-PLAY-11）：映射、选中与旧标记引用全部清空，成功后再建立新映射
   resetLinkageState();
@@ -503,11 +500,13 @@ function scrollIntoViewIfNeeded(elements: SVGElement[]): void {
     return;
   }
   const margin = 32;
+  // 顶部预留顶栏实际高度（换行变高时随之更新）：滚动后音符不被粘住的控制区遮住
+  const viewTop = topbarElement.offsetHeight;
   const viewBottom = window.innerHeight - keyboardSection.offsetHeight;
   if (rect.bottom > viewBottom - margin) {
     window.scrollBy({ top: rect.bottom - viewBottom + margin });
-  } else if (rect.top < margin) {
-    window.scrollBy({ top: rect.top - margin });
+  } else if (rect.top < viewTop + margin) {
+    window.scrollBy({ top: rect.top - viewTop - margin });
   }
 }
 
