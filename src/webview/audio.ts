@@ -48,6 +48,9 @@ interface PrepareTask {
   primeStarted: boolean;
 }
 
+/** abcjs 未声明的内部能力：setUpAudio 把 midiPitches 写到音符元素，是时序事件音高的唯一来源。 */
+type PitchDataCapable = TuneObject & { setUpAudio?: (options?: Record<string, unknown>) => unknown };
+
 export class PlaybackController {
   private readonly soundfontUrl: string | undefined;
   private readonly onChange: () => void;
@@ -291,8 +294,32 @@ export class PlaybackController {
     this.statusKey = null;
     this.pendingStartMs = undefined;
     this.timer?.stop(); // 旧版本时序停止（换版归零）
-    this.timer = tune === undefined ? undefined : this.createTimer(tune);
+    if (tune !== undefined) {
+      // 先补音高数据再建时序：时序事件在建构时克隆 midiPitches，晚补不会回填（键盘音域与播放高亮依据）
+      this.preparePitchData(tune);
+      this.timer = this.createTimer(tune);
+    } else {
+      this.timer = undefined;
+    }
     this.onTimeline(null); // 换版清除播放高亮（新谱面由 main 重建映射，SPEC-PLAY-11）
+  }
+
+  /**
+   * 补写音符元素的 midiPitches：abcjs 只经 setUpAudio（合成 / MIDI 路径）把音高写到音符元素上，
+   * 而 TimingCallbacks 建构即克隆该数据；不先补一次则时序事件无音高，键盘音域与播放高亮落空。
+   * 合成器初始化随后会以其自身参数重跑，音高值不受乐器参数影响。
+   */
+  private preparePitchData(tune: TuneObject): void {
+    const setUpAudio = (tune as PitchDataCapable).setUpAudio;
+    if (typeof setUpAudio !== 'function') {
+      return;
+    }
+    try {
+      setUpAudio.call(tune, {});
+    } catch (error) {
+      // 音高数据不可用：不阻断渲染与播放，仅键盘音域与播放高亮缺失
+      console.error('ABC Desk: audio sequence setup failed', error);
+    }
   }
 
   /** 创建当前曲目的演奏时序（SPEC-PLAY-11 / 12）：事件回调交给 main 更新播放高亮。 */

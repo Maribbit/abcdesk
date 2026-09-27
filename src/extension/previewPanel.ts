@@ -26,7 +26,10 @@ import {
  * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
  * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点，来源标签关闭后按 URI 重新打开（SPEC-STATE-05 / CMD-12）。
  *
- * 键盘可视化等行为由后续批次接入（见 docs/spec/play.md、state.md）。
+ * 键盘可视化在 webview 内实现（SPEC-PLAY-08 / 09）：宿主只提供 DOM 骨架与样式，
+ * 音域 / 收起属会话内界面状态，不新增消息（跨会话恢复留待设置记忆批次，SPEC-SET-05）。
+ * 布局形态：键盘作为独立 dock 粘在预览底部（无多余按钮，形态对齐 chatmusic 调校版），
+ * 谱面在其上方区域内滚动；低高度回退内容整体滚动、键盘回文档流（D0 低高度例外，阈值为暂订实测项）。
  */
 
 /** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）。 */
@@ -623,15 +626,23 @@ export class PreviewPanelManager implements vscode.Disposable {
   <style nonce="${nonce}">
     :root { color-scheme: light dark; }
     body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
       margin: 0;
+      /* 预览无全局横滚需求：谱面按容器宽缩放、键盘内部横滚；兼作旧宽渲染溢出的防线 */
+      overflow-x: hidden;
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
     }
     #status {
+      flex: 0 0 auto;
       position: sticky;
       top: 0;
+      z-index: 3;
+      background: var(--vscode-editor-background);
       padding: 6px 12px;
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
       color: var(--vscode-descriptionForeground, var(--vscode-foreground));
@@ -640,12 +651,17 @@ export class PreviewPanelManager implements vscode.Disposable {
       text-overflow: ellipsis;
     }
     #controls {
+      flex: 0 0 auto;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 8px;
       padding: 6px 12px;
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
+    }
+    /* 谱面区：flex 拉伸把键盘 dock 顶到视口底边（短文档也贴底）；滚动仍走整页 */
+    #score-region {
+      flex: 1 1 auto;
     }
     #controls button, #content-status button, #follow-resume {
       font: inherit;
@@ -664,11 +680,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       cursor: default;
       background: var(--vscode-button-background);
     }
-    /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，控制区滚出视口后仍可操作 */
+    /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，底边避开键盘 dock（高度经 CSS 变量同步） */
     #follow-resume {
       position: fixed;
       right: 16px;
-      bottom: 16px;
+      bottom: calc(var(--abcdesk-dock-height, 0px) + 16px);
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     }
     #follow-resume[hidden] { display: none; }
@@ -684,9 +700,14 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
     #content-status[hidden] { display: none; }
-    /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线 */
-    #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; position: relative; }
-    #score svg { display: block; }
+    /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线；
+       box-sizing 必须 border-box：abcjs responsive 会往容器写内联 width:100%，content-box 下再加 padding 就溢出撑宽 */
+    #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; position: relative; box-sizing: border-box; }
+    /*
+     * 谱面宽度始终跟住容器（覆盖 abcjs 内联 width/height）：viewBox 按比例缩放，
+     * 容器变窄（渲染后出现滚动条 / 面板变化）不再溢出撑出全局横滚，dock 与谱面同宽。
+     */
+    #score > svg { display: block; width: 100% !important; height: auto !important; }
     /*
      * 谱面联动标记（SPEC-PLAY-11）：形状与颜色双重区分——
      * 查阅 / 点选为音符包围虚线框（覆盖层，不进入 SVG、不阻断点击命中），播放高亮为音符填充换色；两类标记可共存。
@@ -702,6 +723,121 @@ export class PreviewPanelManager implements vscode.Disposable {
     /* 点选填充覆盖 abcjs 原生亮红（#ff0000）：与包围框同族；播放高亮规则保持在后（同优先级时后写生效） */
     #score .abcjs-note_selected { fill: #8ab4f8; }
     #score .abcdesk-playing { fill: #d84315; }
+    /*
+     * 键盘可视化（SPEC-PLAY-08 / 09）：独立 dock 粘在预览底部，形态就是一架键盘——
+     * 无盒子边框与多余按钮，dock 条只留说明 / 状态与弱化的音域 / 收起控件；
+     * 窄窗口横向滚动而非压缩键宽。
+     */
+    #keyboard {
+      flex: 0 0 auto;
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      border-top: 1px solid var(--vscode-panel-border, transparent);
+      background: #f1f3f5;
+    }
+    @media (prefers-color-scheme: dark) {
+      #keyboard { background: #262a31; }
+    }
+    #keyboard[hidden] { display: none; }
+    /* dock 条：说明与状态居左，控件居右；字号比正文小一级，不与键盘争视觉重心 */
+    #keyboard-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 8px;
+      font-size: calc(var(--vscode-font-size, 13px) - 2px);
+    }
+    #keyboard-meta-spacer { flex: 1 1 auto; }
+    #keyboard-caption, #keyboard-note {
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    }
+    #keyboard-range-label { display: inline-flex; align-items: center; gap: 4px; }
+    #keyboard-range-label[hidden] { display: none; }
+    #keyboard-range {
+      font: inherit;
+      padding: 1px 4px;
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, transparent));
+      border-radius: 2px;
+    }
+    /* 收起 / 展开为弱化按钮：透明底、悬停才浮现，保持 dock 条安静 */
+    #keyboard-collapse {
+      font: inherit;
+      padding: 1px 6px;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      background: transparent;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    #keyboard-collapse:hover { background: rgb(128 128 128 / 25%); }
+    #keyboard-note[hidden] { display: none; }
+    #keyboard-viewport { position: relative; }
+    #keyboard-scroll {
+      overflow-x: auto;
+      padding: 0 8px 8px;
+    }
+    #keyboard-scroll[hidden] { display: none; }
+    /* 键盘滚动区可用键盘访问，但不把 88 个琴键加入 Tab 顺序（SPEC-A11Y-13） */
+    #keyboard-scroll:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    #keyboard-keys { display: flex; align-items: flex-start; gap: 0; min-height: 52px; }
+    .abcdesk-key { position: relative; box-sizing: border-box; flex: 0 0 auto; border-radius: 0 0 3px 3px; }
+    .abcdesk-key-white {
+      z-index: 1;
+      width: var(--abcdesk-white-key-width, 20px);
+      height: var(--abcdesk-white-key-height, 52px);
+      border: 1px solid #5a5a5a;
+      border-left-width: 0;
+      background: #ffffff;
+    }
+    .abcdesk-key-white:first-child { border-left-width: 1px; }
+    .abcdesk-key-black {
+      z-index: 2;
+      width: var(--abcdesk-black-key-width, 12px);
+      height: var(--abcdesk-black-key-height, 32px);
+      margin: 0 var(--abcdesk-black-key-offset, -6px);
+      background: #2b2b2b;
+      box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
+    }
+    /* 各 C 的八度标签（SPEC-PLAY-08）：白键右下角，中央 C 即为 C4 */
+    .abcdesk-key-white[data-note^='C']::after {
+      content: attr(data-note);
+      position: absolute;
+      right: 2px;
+      bottom: 3px;
+      font-size: 8px;
+      line-height: 1;
+      color: #5a5a5a;
+    }
+    /* 查阅 / 点选反射（SPEC-PLAY-15）：与查阅虚线框同色系；播放高亮规则保持在后（同键同时命中时播放色优先） */
+    .abcdesk-key-pointed { background: #1a73e8; }
+    .abcdesk-key-pointed::after { color: #ffffff; }
+    /* 播放高亮（SPEC-PLAY-09）：与谱面高亮同色；亮键不代表真实按键或必发声 */
+    .abcdesk-key-active { background: #d84315; }
+    .abcdesk-key-active::after { color: #ffffff; }
+    /* 方向提示（SPEC-PLAY-08）：视口外有提示音时显示，只提示方向、不拉回滚动位置 */
+    .abcdesk-keyboard-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      padding: 2px 4px;
+      font-size: 10px;
+      line-height: 1;
+      color: #ffffff;
+      background: rgb(0 0 0 / 45%);
+      border-radius: 3px;
+      pointer-events: none;
+    }
+    #keyboard-hint-left { left: 4px; }
+    #keyboard-hint-right { right: 4px; }
+    .abcdesk-keyboard-arrow[hidden] { display: none; }
+    /* 低高度例外（D0）：不把谱面夹在上下固定区域之间，键盘回文档流随内容整体滚动；阈值为暂订实测项 */
+    @media (max-height: 400px) {
+      #keyboard { position: static; }
+    }
   </style>
 </head>
 <body>
@@ -712,11 +848,29 @@ export class PreviewPanelManager implements vscode.Disposable {
     <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
     <span id="playback-status" role="status" aria-live="polite"></span>
   </div>
-  <div id="content-status" role="status" aria-live="polite" hidden>
-    <span id="content-status-text"></span>
-    <button id="reveal-source" type="button" hidden></button>
+  <div id="score-region">
+    <div id="content-status" role="status" aria-live="polite" hidden>
+      <span id="content-status-text"></span>
+      <button id="reveal-source" type="button" hidden></button>
+    </div>
+    <div id="score"></div>
   </div>
-  <div id="score"></div>
+  <section id="keyboard" hidden>
+    <div id="keyboard-meta">
+      <span id="keyboard-caption"></span>
+      <span id="keyboard-note" hidden></span>
+      <span id="keyboard-meta-spacer"></span>
+      <label id="keyboard-range-label"><span></span><select id="keyboard-range"><option value="tune" selected></option><option value="full"></option></select></label>
+      <button id="keyboard-collapse" type="button"></button>
+    </div>
+    <div id="keyboard-viewport">
+      <div id="keyboard-scroll" tabindex="0" role="group">
+        <div id="keyboard-keys"></div>
+      </div>
+      <span id="keyboard-hint-left" class="abcdesk-keyboard-arrow" aria-hidden="true" hidden>◀</span>
+      <span id="keyboard-hint-right" class="abcdesk-keyboard-arrow" aria-hidden="true" hidden>▶</span>
+    </div>
+  </section>
   <button id="follow-resume" type="button" hidden></button>
   <script nonce="${nonce}">window.__abcdesk = { soundfontUrl: ${JSON.stringify(soundfontUrl)} };</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>

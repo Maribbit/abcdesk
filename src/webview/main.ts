@@ -1,6 +1,7 @@
 import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from 'abcjs';
 import { parseHostMessage, type DocumentMessage } from '../core/messages';
 import { PlaybackController } from './audio';
+import { KeyboardView, collectPitches } from './keyboard';
 import { t } from './l10n';
 
 /**
@@ -19,7 +20,10 @@ import { t } from './l10n';
  * - 播放位置超出可视区域自动跟随滚动，手动滚动后暂停并显示"恢复跟随"；
  * - "从此处播放"按可靠映射定位起播，映射不可靠或联动停用时说明原因（不悄悄从头播放）；
  * - 控制区"从此处播放"按钮对所选音符起播（SPEC-PLAY-12），可用性随选择与联动状态刷新。
- * 键盘可视化由后续批次接入（见 docs/spec/play.md）。
+ * 键盘（SPEC-PLAY-08 / 09 / 15、STATE-03 / 05）：
+ * - 键盘默认按当前曲目材料音域（至少两个八度）、可切换完整 88 键与手动收起；
+ *   播放高亮跟随演奏时间（含静音声部），视口外的提示音只显示方向箭头；
+ * - 光标 / 点选命中的音符以查阅色反射到键盘（SPEC-PLAY-15），随查阅标记一同清除。
  */
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
@@ -74,6 +78,20 @@ const webviewConfig = (window as unknown as { __abcdesk?: { soundfontUrl?: unkno
 const soundfontUrl = typeof webviewConfig?.soundfontUrl === 'string' ? webviewConfig.soundfontUrl : undefined;
 
 const controller = new PlaybackController({ soundfontUrl }, refreshPlaybackUi, applyPlayingHighlight);
+
+/** 键盘可视化（SPEC-PLAY-08 / 09）：音域 / 收起两态独立，动态高亮由播放事件驱动。 */
+const keyboardSection = queryElement('keyboard');
+const keyboardView = new KeyboardView({
+  section: keyboardSection,
+  caption: queryElement('keyboard-caption'),
+  note: queryElement('keyboard-note'),
+  scroll: queryElement('keyboard-scroll'),
+  keys: queryElement('keyboard-keys'),
+  rangeSelect: queryElement<HTMLSelectElement>('keyboard-range'),
+  collapseButton: queryElement<HTMLButtonElement>('keyboard-collapse'),
+  leftArrow: queryElement('keyboard-hint-left'),
+  rightArrow: queryElement('keyboard-hint-right'),
+});
 
 /** 按当前相位刷新按钮标签、状态文案并上报播放状态（SPEC-PLAY-01 / 13）。 */
 function refreshPlaybackUi(): void {
@@ -137,6 +155,7 @@ function showEmptyState(): void {
   contentStatusKey = 'empty-file';
   showRevealSource = true;
   controller.setTune(undefined);
+  keyboardView.clear(); // 空状态不显示键盘（SPEC-STATE-05，键盘区随材料出现 / 消失）
   updateContentStatus();
 }
 
@@ -171,6 +190,7 @@ function renderDocument(message: DocumentMessage): boolean {
       // 保留旧谱并标记"仅供参考"（SPEC-STATE-03）；旧谱与源码的联动保持停用
       scoreElement.replaceChildren(...previousNodes);
       contentStatusKey = 'stale-score';
+      keyboardView.clearActivePitches(); // 旧谱参考清除键盘动态提示，键盘随旧版本保留（SPEC-STATE-03）
     } else {
       // 首次失败且无旧谱：错误占位（SPEC-STATE-03）
       scoreElement.textContent = '';
@@ -178,6 +198,7 @@ function renderDocument(message: DocumentMessage): boolean {
       fallback.textContent = t('render-failed');
       scoreElement.appendChild(fallback);
       contentStatusKey = null;
+      keyboardView.clear();
     }
     showRevealSource = false;
     controller.setTune(undefined); // 禁用旧谱播放，避免播放已失效版本（SPEC-STATE-03）
@@ -197,6 +218,8 @@ function renderDocument(message: DocumentMessage): boolean {
   controller.setTune(tune);
   // 建立字符↔演奏时序映射（SPEC-PLAY-11 / 12）：与播放共用同一份时序（P02：反复取第一次出现）
   timingEvents = controller.getTimings();
+  // 键盘按当前版本的材料音高重建音域（SPEC-PLAY-08）：单曲目材料、含静音声部，不合并其他曲目
+  keyboardView.setTune(collectPitches(timingEvents));
   updateContentStatus();
   return true;
 }
@@ -227,6 +250,8 @@ function resetLinkageState(): void {
   readingElements = [];
   playingElements = [];
   followPaused = false;
+  keyboardView.clearActivePitches(); // 换版 / 重渲染清除键盘动态提示（SPEC-STATE-03）
+  keyboardView.clearPointedPitches(); // 换版 / 重渲染清除查阅 / 点选反射（SPEC-PLAY-15）
   updatePlayFromHereButton();
 }
 
@@ -300,13 +325,15 @@ function handleScoreClick(abcElem: AbcElem): void {
   const startChar = abcElem.startChar;
   const endChar = abcElem.endChar;
   if (abcElem.el_type !== 'note' || startChar === undefined || endChar === undefined) {
-    // 点到非音符元素（小节线、谱号等）：清除所选音符，不请求定位（无有效映射）
+    // 点到非音符元素（小节线、谱号等）：清除所选音符与键盘反射，不请求定位（无有效映射）
     selectedNote = undefined;
+    keyboardView.clearPointedPitches();
     updatePlayFromHereButton();
     return;
   }
   selectedNote = { startChar, endChar };
   updatePlayFromHereButton();
+  reflectPointedPitches(startChar); // 点选反射（SPEC-PLAY-15）：与查阅标记共用同一映射
   const unavailable = linkageUnavailableReason();
   if (unavailable !== undefined) {
     host.postMessage({ type: 'linkage-unavailable', reason: unavailable });
@@ -354,17 +381,27 @@ function applyReadingMarker(offset: number | null): void {
   readingElements = [];
   readingOffset = offset;
   if (offset === null) {
+    keyboardView.clearPointedPitches();
     return;
   }
   const event = findTimingEvent(offset);
   if (event === undefined) {
+    keyboardView.clearPointedPitches();
     return;
   }
+  // 键盘反射（SPEC-PLAY-15）：与查阅标记同一映射，以查阅色突出对应琴键
+  keyboardView.setPointedPitches(collectPitches([event]));
   readingElements = elementsOf(event);
   drawReadingBoxes(event);
   if (controller.getStatus().phase !== 'playing') {
     scrollIntoViewIfNeeded(readingElements);
   }
+}
+
+/** 点选反射（SPEC-PLAY-15）：偏移命中音符时突出对应琴键，无映射时清除。 */
+function reflectPointedPitches(offset: number): void {
+  const event = findTimingEvent(offset);
+  keyboardView.setPointedPitches(event === undefined ? [] : collectPitches([event]));
 }
 
 /** 移除全部查阅框（SPEC-PLAY-11）。 */
@@ -441,11 +478,14 @@ function applyPlayingHighlight(event: NoteTimingEvent | null): void {
   setMarkerClass(playingElements, 'abcdesk-playing', false);
   playingElements = [];
   if (event === null || event.type !== 'event') {
+    keyboardView.setActivePitches([]);
     host.postMessage({ type: 'source-highlight', ranges: [] });
     return;
   }
   playingElements = elementsOf(event);
   setMarkerClass(playingElements, 'abcdesk-playing', true);
+  // 键盘提示跟随记谱材料的演奏时间、含静音声部（SPEC-PLAY-09）；视口外只显示方向箭头（SPEC-PLAY-08）
+  keyboardView.setActivePitches(collectPitches([event]));
   // 源码只高亮、不滚动、不移动光标；由宿主对可见编辑器设置装饰（SPEC-PLAY-11）
   host.postMessage({ type: 'source-highlight', ranges: sourceRangesOf(event) });
   if (!followPaused) {
@@ -453,15 +493,19 @@ function applyPlayingHighlight(event: NoteTimingEvent | null): void {
   }
 }
 
-/** 谱面元素超出可视区域时滚动使其可见（SPEC-PLAY-11）；程序化滚动不触发"手动滚动"判定。 */
+/**
+ * 谱面元素超出可视区域时滚动使其可见（SPEC-PLAY-11）；程序化滚动不触发"手动滚动"判定。
+ * 视口底边扣除键盘 dock 高度：贴底的键盘不算可视区域，跟随不把音符滚到键盘底下。
+ */
 function scrollIntoViewIfNeeded(elements: SVGElement[]): void {
   const rect = unionRect(elements);
   if (rect === undefined) {
     return;
   }
   const margin = 32;
-  if (rect.bottom > window.innerHeight - margin) {
-    window.scrollBy({ top: rect.bottom - window.innerHeight + margin });
+  const viewBottom = window.innerHeight - keyboardSection.offsetHeight;
+  if (rect.bottom > viewBottom - margin) {
+    window.scrollBy({ top: rect.bottom - viewBottom + margin });
   } else if (rect.top < margin) {
     window.scrollBy({ top: rect.top - margin });
   }
@@ -597,6 +641,11 @@ followResumeButton.addEventListener('click', () => {
 
 // 面板尺寸变化时谱面随容器宽度缩放（abcjs 响应式模式不重排版）：重绘覆盖层查阅框保持贴合（SPEC-PLAY-11）
 new ResizeObserver(() => refreshReadingBoxes()).observe(scoreElement);
+
+// 键盘 dock 高度驱动浮动入口的底边偏移：避免"恢复跟随"盖在键盘上
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty('--abcdesk-dock-height', `${keyboardSection.offsetHeight}px`);
+}).observe(keyboardSection);
 
 // 手动滚动检测（SPEC-PLAY-11）：滚动事件本身也由程序化滚动触发，因此只监听用户输入
 window.addEventListener('wheel', pauseFollowOnUserScroll, { passive: true });
