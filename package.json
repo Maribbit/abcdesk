@@ -80,7 +80,9 @@
     "languages": [
       {
         "id": "abc",
-        "extensions": [".abc"]
+        "extensions": [
+          ".abc"
+        ]
       }
     ],
     "menus": {
@@ -126,6 +128,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
     "@types/vscode": "1.75.0",
+    "@vscode/codicons": "^0.0.46-24",
     "esbuild": "^0.28.2",
     "eslint": "^10.3.0",
     "globals": "^17.6.0",

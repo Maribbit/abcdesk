@@ -2,6 +2,53 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-10-01 顶栏排列调整（速度左置）与 % ⟳ ▶ ⏹ 等距节奏
+
+- 决策：控制区排列改为“速度 → 播放 / 停止 → 声部 → 从此处播放”（原为“播放 / 停止 → 速度、声部 → 从此处播放”）；稳定分组由三组改为四组：速度组（`#speed-group`）、播放 / 停止组（新增 `#transport-group`）、声部组、从此处播放组。百分号、重置、播放、停止四个控件的墨迹间距统一为 18px：列间距改由分组 `margin-right` 显式控制——`#speed-group` 右侧 1.4px、`#transport-group` 组内 gap 2.2px（`#speed-control` 组内 4px gap 照旧）、`#speed-reset` 左距 5.15px。
+- 理由：F5 反馈——速度调节先于播放更贴合练习流，且四者原被组边界割裂（实测 %→⟳ 12.75px、▶→⏹ 23.75px，播放 / 停止还位于速度左侧）。等距取墨迹（字形边缘）口径，与此前“顶点到灰边”的测量习惯一致；盒距口径会因图标盒含 3px 透明边框 + 3px 内距而系统性偏离观感。速度与播放 / 停止分持两组而非合并：合并后换行最小单元约 205px，极窄面板会连带隐藏播放 / 停止，与 SPEC-PLAY-13“不藏关键控件”冲突。数值经无头 Chrome 4 倍放大像素实测校准（候选 17 / 18 / 19px 择优取 18，验证 % ⟳ ▶ ⏹ 三项均 18.0px）。
+- 影响：previewPanel.ts（HTML 组序与四组结构、`#controls` 列间距机制、三条间距数值）；spec PLAY-13 分组列表同步改写为（“速度”“循环、播放 / 暂停、停止”“声部”“从此处播放、更多”）；main.ts 与 manual-checks 无新增判据；“顶栏细化”条目的三组分组表述以本条为准。
+
+## 2026-10-01 顶栏图标 hover “偏大”根因（background 简写重置 background-clip）
+
+- 决策：hover / disabled 底色改用 `background-color`（不再用 `background` 简写）；几何定为内距 3px + 3px 透明边框（灰底 20×20、可视圆角 4px、命中区 26×26 不变；停止字形仍为 `debug-stop`）。
+- 理由：`background:` 简写会在 hover 规则里把 `background-clip: padding-box` 重置回 `border-box`，灰底一直画满 26×26 命中区——这正是用户实测“顶点到灰边 9px vs 原生 6px”的来源，也解释了前两轮收紧内距（3→2px、20→18 盒）为何观感无改善（可见几何因内容左边距恒为 6px 实际未变）。本轮以无头浏览器 4 倍放大像素测量定位并验证：修复前灰底 26 / 右隙 7.75px；修复后 20 / 4.75px；VS Code 原生模拟 22 / 5.00px——对齐。真实字形墨迹（TTF 实测）比 SVG 网格估计更大：14px 时约 [2.75, 12.25]、16px 时 [3, 14]。
+- 影响：previewPanel.ts（`.codicon` 注释、hover / disabled 声明、内距与边框数值）；main.ts 不变；manual-checks 无新增判据。“顶栏图标反馈续”条目中 18×18 / 2px 的数字由本条取代。
+
+## 2026-10-01 顶栏图标反馈续（hover 内距 / 停止字形）
+
+- 决策（两项，F5 反馈落实）：
+  1) hover 可视面由 20×20 再收紧为 18×18、可视圆角 3px：字形 14px 下内距取 2px；4px 透明边框 + `background-clip: padding-box` 维持命中区 26×26 不变。换算依据：原生 22px 盒 / 16px 字形按比例到本顶栏 14px 字形约为 19px 盒，取 18px 落实“观感与原生一致、略紧一档”（用户两轮实测认为内距偏大）。
+  2) 停止字形由 `stop` 换为 `debug-stop`：`stop` 实为“圆圈内含 ✕”的取消语义（用户反馈“更像关闭”）；`debug-stop` 为方形描边，符合停止的通用认知，且与 `play`（描边三角）/ `debug-pause`（双竖条）同族。
+- 理由：内距观感应以“字形与盒的比例”为准（等比例放大对照核对，3px 内距在 14px 字形下松于原生比例）；媒体控制的 ▶ ⏸ ⏹ 里“方形”是停止的既定图形，✕ 系在 VS Code 语义里是取消 / 关闭（调试工具栏亦以 `debug-stop` 表达停止）。
+- 影响：previewPanel.ts（`.codicon` 几何与注释、停止按钮字形类）；main.ts 不变（只设置 title / aria / disabled）；manual-checks 无新增判据。同日“顶栏图标反馈细化”条目中的 20×20 / 4px 数字由本条取代。
+
+## 2026-10-01 顶栏图标反馈细化（hover 矩形 / 准备态 / 停止可用性）
+
+- 决策（三项，F5 反馈落实）：
+  1) hover 矩形收紧：可视面 20×20、可视圆角 4px（VS Code 工具栏实测 padding 3px + 16px 图标盒 = 22×22、cornerRadius-small = 4px；本顶栏字形 14px 按 padding 3px 同口径）；3px 透明边框 + `background-clip: padding-box` 把命中区保持 26×26 不变；hover 底色改用原生 `--vscode-toolbar-hoverBackground`（原 25% 灰留作回退值）。同日“顶栏图标尺寸口径”条目的内距 6×7 / 命中区 28×26 数字由本条取代（字形 14px 口径不变）。
+  2) 准备态静态化：取消 `codicon-modifier-spin` 旋转动画（用户反馈旋转在圆角矩形背景上突兀）；`loading` 字形保留静态，忙碌语义由字形 + 本地化提示 + 状态行“正在准备音频…”承担。
+  3) 停止按钮空闲置灰：`stopButton.disabled = phase === 'idle'`；preparing / playing / paused 均可用——准备期的“停止 = 取消并归零”是 SPEC-PLAY-01 的取消入口，不能随置灰撤掉。
+- 理由：hover 矩形只包住图标是 VS Code 工具栏的观感基准（实测 padding 3px、action-label 圆角取 cornerRadius-small）；命中区经透明边框维持不变，不牺牲可点性。准备时长通常很短，动画收益小、干扰大；空闲时停止无可执行内容（L10N-04“只呈现当前真实可用的操作”，A11Y-06 名称同步）。
+- 影响：previewPanel.ts（`.codicon` 几何、hover 色、通用 `:disabled` 底色，删除 speed-reset 专属 disabled 规则）；main.ts（图标去 spin、`stopButton.disabled`）；manual-checks PLAY-03 判据增补“空闲时停止置灰”。
+
+## 2026-10-01 顶栏图标尺寸口径（14px）
+
+- 决策：顶栏图标按钮字形定为 14px（内距 6×7，命中区 28×26），并入“与正文文字混排的紧凑动作行”的统一口径；键盘 dock 的收起 / 展开为文字按钮，不适用本口径。
+- 理由：本机 VS Code workbench CSS 实测：独立动作图标（标题栏 / 编辑器工具栏 / 标签动作）16px；与文字混排的紧凑条 12～14px（状态栏 12px、标题栏 command center 动作 14px、notebook 单元状态栏 14px）。顶栏图标与 13px 文字混排，此前 16px 观感偏重（用户反馈），取 14px 与正文同层级；命中区仍不小于 24px（设计红线）。
+- 影响：previewPanel.ts 的 `#controls button.codicon` 字号与内距；“顶栏动作图标化”条目的尺寸部分由本条明确（未来若出现纯图标工具栏再取 16px）。
+
+## 2026-10-01 声部开关语义反转（勾选＝发声）
+
+- 决策：声部菜单复选框改为“勾选＝该声部发声、未勾选＝静音”（默认全选＝全播放），自动和弦伴奏开关同规则；静音摘要仍按静音计数；存储层（SET-04 静音覆盖）不变；声部菜单（details＋checkbox：多选、需暂停、动态数量）与键盘音域（原生 select：单选、即时生效、纯视觉）的形态差异保持——都优先原生控件、由语义驱动形态，本条统一的是“选中＝启用”的方向语义。
+- 理由：多选过滤的心智模型是“勾选的进入结果、未选的不生效”，旧语义要反着读、易误操作；反转后与键盘音域“选中即采用”一致（用户反馈落实）。PLAY-06 规格正文只写“发声开关”、未绑定方向，反转后更贴合，不须改规格。
+- 影响：main.ts 取反勾选映射四处并更新注释；manual-checks PLAY-06 判据增补“（勾选＝发声、未勾选即静音）”。
+
+## 2026-10-01 顶栏动作图标化（codicons 捆绑）
+
+- 决策：顶栏采用“图标承担动作、文字承担状态与领域语义”的混合形态（用户确认）：播放 / 暂停 / 取消起播、停止、恢复原速改为图标按钮（`play`、`debug-pause`、`loading`＋spin、`stop`、`refresh`）；速度输入、声部菜单与“从此处播放”保持文字（静音摘要、起播禁用原因属文字状态）；图标按钮用 VS Code 工具栏形态（透明底、`--vscode-icon-foreground`、悬停浅灰、圆角 4px），命中区不小于原文字按钮（不挤小点击区域）；语义由 `title` 与可访问名称承载，文案沿用既有 l10n 键（无新增）；图标资源捆绑 `@vscode/codicons`（devDependency）：构建时把 codicon.css / codicon.ttf / LICENSE / LICENSE-CODE 与自撰 THIRD_PARTY_NOTICES 拷贝到 out/codicons/（图标内容 CC-BY-4.0、仓库代码 MIT），webview 经 asWebviewUri 加载；同日撤销“顶栏布局与无障碍细化”的 #play min-width 补丁（图标宽度固定，文案切换抖动不再存在）。
+- 理由：▶ / ⏸ / ⏹ 属通用媒体符号、图标化近零学习成本，换来紧凑与中英文宽度稳定；非通用动作图标化要靠悬停猜测，保留文字更易发现；与 VS Code 惯例（标题栏 / 调试工具栏均为图标＋提示）及项目先例（CMD-15 / 17）一致；“取消起播”不再有常驻文字，由 spinner 形态、本地化提示、状态行“正在准备音频…”与空格 / 停止同语义兜底。
+- 影响：previewPanel.ts（codicon.css 链接、三个按钮图标与工具栏样式、撤 min-width）；main.ts（图标类与 title 同步）；package.json / esbuild.config.mjs（devDependency + 构建拷贝）；新增 media/codicons/THIRD_PARTY_NOTICES.txt；PLAY-01、PERF-05、A11Y-06 与 manual-checks PLAY-01 的“显示‘取消起播’”措辞改为“以‘取消起播’语义呈现（图标 + 提示）”；PLAY-13 分组与其余判据不变。
+
 ## 2026-09-27 顶栏布局与无障碍细化（P06 后续批次）
 
 - 决策：对顶栏做一轮细化（全部落既有规格，不新增条目）：①控件按稳定分组包裹为三组——播放 / 暂停＋停止、速度＋声部、从此处播放（循环与“更多”实现后就位于对应组），组内不换行、仅组间断行；②状态行 #playback-status 从控件行移出、独占一行置于进度条之后，无文案时隐藏不占位；③声部菜单 Esc 关闭并把焦点还给触发钮（落实 A11Y-05，此前菜单无 Esc 处理），展开时右缘越出视口则翻转为右对齐（CSS 加宽度上限防御），不做点击外部关闭（设计未要求；Esc 与再点触发钮已覆盖退出）；④#play 设 min-width 5.5em，消除“播放 / 暂停 / 取消起播”切换的宽度抖动（按中文最宽文案预留，英文长文案相位仍有小幅增宽）；⑤进度条整行高度 18→24px、拖动中加 .abcdesk-dragging（滑块放大、轨道加粗、抓取光标）；⑥按钮 / summary / 下拉 / 声部复选统一 focus-visible 焦点环（--vscode-focusBorder）；⑦低高度（max-height 400px，暂订实测项）压缩顶栏内距。

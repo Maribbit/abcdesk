@@ -132,7 +132,7 @@ const keyboardView = new KeyboardView({
   rightArrow: queryElement('keyboard-hint-right'),
 });
 
-/** 按当前相位刷新按钮标签、状态文案并上报播放状态（SPEC-PLAY-01 / 13）。 */
+/** 按当前相位刷新按钮图标与提示、状态文案并上报播放状态（SPEC-PLAY-01 / 13）。 */
 function refreshPlaybackUi(): void {
   if (pendingDocument !== undefined) {
     const { phase } = controller.getStatus();
@@ -148,10 +148,15 @@ function refreshPlaybackUi(): void {
   }
   const labelKey = phase === 'preparing' ? 'cancel-prepare' : phase === 'playing' ? 'pause' : 'play';
   const label = t(labelKey);
-  playButton.textContent = label;
-  playButton.setAttribute('aria-label', label); // 可访问名称与按钮文案同步（SPEC-PLAY-01）
-  stopButton.textContent = t('stop');
+  // 相位 → 图标字形（SPEC-PLAY-01）：准备中显示 loading 静态图标（不旋转），点击仍表示取消起播
+  const iconKey = phase === 'preparing' ? 'loading' : phase === 'playing' ? 'debug-pause' : 'play';
+  playButton.className = `codicon codicon-${iconKey}`;
+  playButton.title = label;
+  playButton.setAttribute('aria-label', label); // 可访问名称与提示同步（SPEC-PLAY-01 / A11Y-06）
+  stopButton.title = t('stop');
   stopButton.setAttribute('aria-label', t('stop'));
+  // 停止仅在有可停止内容时可用；准备中保留（= 取消并归零，SPEC-PLAY-01）
+  stopButton.disabled = phase === 'idle';
   playbackStatusElement.hidden = statusKey === null; // 无文案时不占位（SPEC-PLAY-13）
   playbackStatusElement.textContent = statusKey === null ? '' : t(statusKey);
   updateFollowResumeButton();
@@ -167,7 +172,7 @@ function refreshPlaybackUi(): void {
 function updateSpeedUi(): void {
   const speed = controller.getSpeed();
   speedLabelElement.textContent = t('speed-label');
-  speedResetButton.textContent = t('speed-reset');
+  speedResetButton.title = t('speed-reset');
   speedResetButton.setAttribute('aria-label', t('speed-reset'));
   speedResetButton.disabled = speed === SPEED_DEFAULT;
   if (document.activeElement !== speedInputElement) {
@@ -200,11 +205,12 @@ function updateVoicesUi(): void {
     rebuildVoicesList(voices, hasChords);
   }
   for (let index = 0; index < voiceInputs.length; index += 1) {
-    voiceInputs[index].checked = voices[index]?.muted ?? false;
+    // 勾选＝发声、未勾选即静音（SPEC-PLAY-06 发声开关）：默认全选＝按乐谱全部声部播放
+    voiceInputs[index].checked = !(voices[index]?.muted ?? false);
     voiceInputs[index].disabled = playing;
   }
   if (chordsInput !== undefined) {
-    chordsInput.checked = controller.getChordsMuted();
+    chordsInput.checked = !controller.getChordsMuted();
     chordsInput.disabled = playing;
   }
   voicesMenuElement.hidden = voices.length === 0 && !hasChords;
@@ -225,7 +231,7 @@ function updateVoicesUi(): void {
   voicesSummaryElement.textContent = summary;
 }
 
-/** 重建声部菜单行（SPEC-PLAY-06）：声部按清单顺序，自动和弦伴奏行为独立开关（存在时）。 */
+/** 重建声部菜单行（SPEC-PLAY-06）：声部按清单顺序、勾选＝发声；自动和弦伴奏行为独立开关（存在时）。 */
 function rebuildVoicesList(voices: Array<VoiceEntry & { muted: boolean }>, hasChords: boolean): void {
   voicesListElement.textContent = '';
   voiceInputs = [];
@@ -233,17 +239,17 @@ function rebuildVoicesList(voices: Array<VoiceEntry & { muted: boolean }>, hasCh
   for (const voice of voices) {
     const label = voice.name ?? t('voice-label').replace('{0}', String(voice.index + 1));
     voiceInputs.push(
-      appendVoiceRow(label, voice.muted, (input) => controller.setVoiceMuted(voice.index, input.checked)),
+      appendVoiceRow(label, !voice.muted, (input) => controller.setVoiceMuted(voice.index, !input.checked)),
     );
   }
   if (hasChords) {
-    chordsInput = appendVoiceRow(t('voices-chords'), controller.getChordsMuted(), (input) =>
-      controller.setChordsMuted(input.checked),
+    chordsInput = appendVoiceRow(t('voices-chords'), !controller.getChordsMuted(), (input) =>
+      controller.setChordsMuted(!input.checked),
     );
   }
 }
 
-/** 生成一行声部开关（整行可点）；返回输入框供刷新勾选与可调性。 */
+/** 生成一行声部开关（整行可点）：勾选＝发声、未勾选即静音；返回输入框供刷新勾选与可调性。 */
 function appendVoiceRow(
   labelText: string,
   checked: boolean,

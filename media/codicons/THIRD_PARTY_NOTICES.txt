@@ -1,0 +1,13 @@
+ABC Desk includes third-party icon assets for the preview control bar.
+
+Codicons (icon font)
+Source: https://github.com/microsoft/vscode-codicons
+Package: @vscode/codicons (npm)
+Icons and font: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+Repository code: MIT License
+Copyright (c) Microsoft Corporation
+
+The icon font is copied to out/codicons/ at build time together with the upstream
+LICENSE and LICENSE-CODE files, so preview controls can render VS Code
+native-style icons without loading remote resources.

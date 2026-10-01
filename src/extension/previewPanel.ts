@@ -606,6 +606,10 @@ export class PreviewPanelManager implements vscode.Disposable {
   /** 生成 webview HTML：CSP 只放行 nonce 自有脚本与扩展资源，连接仅限扩展自有资源（SPEC-ENV-03）。 */
   private renderHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'out', 'webview.js'));
+    // codicon 图标字体经 asWebviewUri 交给 webview（构建拷贝到 out/codicons/，SPEC-ENV-05）：图标按钮字形与旋转动画
+    const codiconUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'out', 'codicons', 'codicon.css'),
+    );
     // 本地钢琴音色目录经 asWebviewUri 交给 webview（SPEC-ENV-05 / 07），abcjs 默认远程地址不得被触发
     const soundfontUrl = webview
       .asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'soundfonts', 'FluidR3_GM'))
@@ -628,6 +632,7 @@ export class PreviewPanelManager implements vscode.Disposable {
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ABC Desk</title>
+  <link rel="stylesheet" href="${codiconUri}">
   <style nonce="${nonce}">
     :root { color-scheme: light dark; }
     body {
@@ -652,15 +657,21 @@ export class PreviewPanelManager implements vscode.Disposable {
       background: var(--vscode-editor-background);
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
+    /* 控制区（SPEC-PLAY-13）：列间距走分组 margin-right（图标节奏需要精确值），仅保留行距 8px */
     #controls {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 8px 12px;
+      row-gap: 8px;
       padding: 6px 12px;
     }
-    /* 稳定分组（SPEC-PLAY-13）：组内不换行、仅组间断行；循环与“更多”实现后就位于对应组 */
+    /* 稳定分组（SPEC-PLAY-13）：组内不换行、仅组间断行；默认组间距 12px（循环实现后与播放 / 停止同组） */
     .abcdesk-control-group { display: inline-flex; align-items: center; gap: 8px; }
+    .abcdesk-control-group:not(:last-child) { margin-right: 12px; }
+    /* 图标节奏（SPEC-PLAY-13）：% ⟳ ▶ ⏹ 墨迹间距统一 18px——速度组 → 传输组 1.4px、播放 ↔ 停止 2.2px；
+       数值由无头 Chrome 4 倍放大像素实测校准（% ⟳ ▶ ⏹ 三项均 18.0px），改动前先复测 */
+    #speed-group { margin-right: 1.4px; }
+    #transport-group { gap: 2.2px; }
     /* 谱面区：flex 拉伸把键盘 dock 顶到视口底边（短文档也贴底）；滚动仍走整页 */
     #score-region {
       flex: 1 1 auto;
@@ -682,8 +693,20 @@ export class PreviewPanelManager implements vscode.Disposable {
       cursor: default;
       background: var(--vscode-button-background);
     }
-    /* 播放按钮文案在“播放 / 暂停 / 取消起播”间切换（SPEC-PLAY-01）：按最宽文案预留宽度，避免控件行抖动 */
-    #play { min-width: 5.5em; }
+    /* 图标按钮（SPEC-PLAY-01 / 13、A11Y-06）：字形 14px；hover 可视面 20×20、可视圆角 4px，内距 3px 与 VS Code 工具栏（22px 盒 / 16px 字形）同口径——4 倍放大像素实测右隙 4.75 vs 原生 5.00；
+       hover 底色必须用 background-color：background 简写会把 background-clip 重置回 border-box、灰底涨到 26×26 命中区（曾致多轮“偏大”反馈）；
+       3px 透明边框 + padding-box 裁剪把命中区保持 26×26；语义由 title 与可访问名称承载 */
+    #controls button.codicon {
+      font: normal normal normal 14px/1 codicon;
+      padding: 3px;
+      border: 3px solid transparent;
+      background-color: transparent;
+      background-clip: padding-box;
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
+      border-radius: 7px;
+    }
+    #controls button.codicon:hover { background-color: var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 25%)); }
+    #controls button.codicon:disabled { background-color: transparent; }
     /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，底边避开键盘 dock（高度经 CSS 变量同步） */
     #follow-resume {
       position: fixed;
@@ -713,14 +736,9 @@ export class PreviewPanelManager implements vscode.Disposable {
     #speed-control input:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     #speed-hint { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
     #speed-hint[hidden] { display: none; }
-    /* 恢复原速为弱化按钮：不抢播放 / 停止的视觉位置 */
-    #controls #speed-reset {
-      padding: 2px 6px;
-      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
-      background: transparent;
-    }
-    #controls #speed-reset:hover { background: rgb(128 128 128 / 25%); }
-    #controls #speed-reset:disabled { background: transparent; }
+    /* 恢复原速为弱化图标：不抢播放 / 停止的视觉位置（禁用底色由通用 .codicon:disabled 规则处理）；
+       margin-left 参与 “% ⟳ ▶ ⏹” 等距节奏：组内 gap 4px + 5.15px = 18px 墨迹间距（实测校准） */
+    #controls #speed-reset { margin-left: 5.15px; color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
     /* 进度条独占一行（SPEC-PLAY-05）：细轨 + 圆点滑块，整行高度保证易点中 */
     #progress-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; }
     #progress { position: relative; flex: 1 1 auto; min-width: 120px; height: 24px; cursor: pointer; touch-action: none; }
@@ -980,18 +998,22 @@ export class PreviewPanelManager implements vscode.Disposable {
 <body>
   <div id="topbar">
     <div id="controls">
-      <span class="abcdesk-control-group">
-        <button id="play" type="button"></button>
-        <button id="stop" type="button"></button>
-      </span>
-      <span class="abcdesk-control-group">
+      <!-- 速度组（SPEC-PLAY-13）：置于最左——先调速、再播放的练习流 -->
+      <span class="abcdesk-control-group" id="speed-group">
         <span id="speed-control">
           <label id="speed-label" for="speed-input"></label>
           <input id="speed-input" type="number" min="25" max="200" step="5" inputmode="numeric">
           <span aria-hidden="true">%</span>
-          <button id="speed-reset" type="button"></button>
+          <button id="speed-reset" type="button" class="codicon codicon-refresh"></button>
           <span id="speed-hint" hidden></span>
         </span>
+      </span>
+      <!-- 播放/停止单独成组：极窄面板换行时整组下移，不被速度组连累隐藏 -->
+      <span class="abcdesk-control-group" id="transport-group">
+        <button id="play" type="button" class="codicon codicon-play"></button>
+        <button id="stop" type="button" class="codicon codicon-debug-stop"></button>
+      </span>
+      <span class="abcdesk-control-group">
         <details id="voices-menu">
           <summary id="voices-summary"></summary>
           <div id="voices-panel">
