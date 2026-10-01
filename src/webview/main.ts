@@ -62,6 +62,7 @@ const voicesMenuElement = queryElement<HTMLDetailsElement>('voices-menu');
 const voicesSummaryElement = queryElement('voices-summary');
 const voicesPauseButton = queryElement<HTMLButtonElement>('voices-pause');
 const voicesListElement = queryElement('voices-list');
+const voicesPanelElement = queryElement('voices-panel');
 const progressElement = queryElement('progress');
 const progressFillElement = queryElement('progress-fill');
 const progressThumbElement = queryElement('progress-thumb');
@@ -151,6 +152,7 @@ function refreshPlaybackUi(): void {
   playButton.setAttribute('aria-label', label); // 可访问名称与按钮文案同步（SPEC-PLAY-01）
   stopButton.textContent = t('stop');
   stopButton.setAttribute('aria-label', t('stop'));
+  playbackStatusElement.hidden = statusKey === null; // 无文案时不占位（SPEC-PLAY-13）
   playbackStatusElement.textContent = statusKey === null ? '' : t(statusKey);
   updateFollowResumeButton();
   updateSpeedUi();
@@ -893,6 +895,27 @@ speedInputElement.addEventListener('keydown', (event: KeyboardEvent) => {
 speedResetButton.addEventListener('click', () => controller.setSpeed(SPEED_DEFAULT));
 // 声部菜单（SPEC-PLAY-06）：播放中先暂停再调整
 voicesPauseButton.addEventListener('click', () => controller.pause());
+// 菜单 Esc 关闭并把焦点还给触发钮（SPEC-A11Y-05）
+voicesMenuElement.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !voicesMenuElement.open) {
+    return;
+  }
+  voicesMenuElement.open = false;
+  voicesSummaryElement.focus();
+});
+// 面板右缘约束（SPEC-PLAY-13）：打开时若溢出视口右缘则翻转为右对齐（宽度上限见 CSS）
+voicesMenuElement.addEventListener('toggle', () => {
+  voicesPanelElement.style.removeProperty('left');
+  voicesPanelElement.style.removeProperty('right');
+  if (!voicesMenuElement.open) {
+    return;
+  }
+  const rect = voicesPanelElement.getBoundingClientRect();
+  if (rect.right > document.documentElement.clientWidth - 8) {
+    voicesPanelElement.style.left = 'auto';
+    voicesPanelElement.style.right = '0';
+  }
+});
 // 进度条（SPEC-PLAY-05）：拖动预览、松手提交；取消拖动（Esc / pointercancel）不提交
 progressElement.addEventListener('pointerdown', (event: PointerEvent) => {
   if (event.button !== 0) {
@@ -905,6 +928,7 @@ progressElement.addEventListener('pointerdown', (event: PointerEvent) => {
     sequence: renderSequence,
   };
   progressElement.setPointerCapture(event.pointerId);
+  progressElement.classList.add('abcdesk-dragging'); // 拖动反馈（SPEC-PLAY-05）：滑块与轨道加粗
   progressElement.focus();
   previewDrag(dragState.fraction);
 });
@@ -918,6 +942,7 @@ progressElement.addEventListener('pointermove', (event: PointerEvent) => {
 progressElement.addEventListener('pointerup', (event: PointerEvent) => {
   const drag = dragState;
   dragState = undefined;
+  progressElement.classList.remove('abcdesk-dragging');
   if (drag === undefined) {
     return;
   }
@@ -931,12 +956,14 @@ progressElement.addEventListener('pointercancel', () => {
     return;
   }
   dragState = undefined; // 取消拖动：不提交，显示回实际位置
+  progressElement.classList.remove('abcdesk-dragging');
   updateProgressUi();
 });
 progressElement.addEventListener('keydown', (event: KeyboardEvent) => {
   if (dragState !== undefined) {
     if (event.key === 'Escape') {
       dragState = undefined;
+      progressElement.classList.remove('abcdesk-dragging');
       updateProgressUi();
       event.preventDefault();
     }

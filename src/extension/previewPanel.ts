@@ -656,9 +656,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
+      gap: 8px 12px;
       padding: 6px 12px;
     }
+    /* 稳定分组（SPEC-PLAY-13）：组内不换行、仅组间断行；循环与“更多”实现后就位于对应组 */
+    .abcdesk-control-group { display: inline-flex; align-items: center; gap: 8px; }
     /* 谱面区：flex 拉伸把键盘 dock 顶到视口底边（短文档也贴底）；滚动仍走整页 */
     #score-region {
       flex: 1 1 auto;
@@ -680,6 +682,8 @@ export class PreviewPanelManager implements vscode.Disposable {
       cursor: default;
       background: var(--vscode-button-background);
     }
+    /* 播放按钮文案在“播放 / 暂停 / 取消起播”间切换（SPEC-PLAY-01）：按最宽文案预留宽度，避免控件行抖动 */
+    #play { min-width: 5.5em; }
     /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，底边避开键盘 dock（高度经 CSS 变量同步） */
     #follow-resume {
       position: fixed;
@@ -688,7 +692,13 @@ export class PreviewPanelManager implements vscode.Disposable {
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     }
     #follow-resume[hidden] { display: none; }
-    #playback-status { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+    /* 状态行（SPEC-PLAY-13）：关键状态位于控制区下方、独占一行；无文案时不占位 */
+    #playback-status {
+      display: block;
+      padding: 0 12px 6px;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    }
+    #playback-status[hidden] { display: none; }
     /* 速度控件（SPEC-PLAY-04）：数字输入 + 恢复原速；带拍提示仅在可可靠换算时显示 */
     #speed-control { display: inline-flex; align-items: center; gap: 4px; }
     #speed-control input {
@@ -713,7 +723,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     #controls #speed-reset:disabled { background: transparent; }
     /* 进度条独占一行（SPEC-PLAY-05）：细轨 + 圆点滑块，整行高度保证易点中 */
     #progress-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; }
-    #progress { position: relative; flex: 1 1 auto; min-width: 120px; height: 18px; cursor: pointer; touch-action: none; }
+    #progress { position: relative; flex: 1 1 auto; min-width: 120px; height: 24px; cursor: pointer; touch-action: none; }
     #progress::before {
       content: '';
       position: absolute;
@@ -746,6 +756,10 @@ export class PreviewPanelManager implements vscode.Disposable {
       background: var(--vscode-progressBar-background, var(--vscode-button-background));
       pointer-events: none;
     }
+    /* 拖动中（SPEC-PLAY-05）：轨道与滑块加粗、光标抓取，提供拖动生效的即时反馈 */
+    #progress.abcdesk-dragging { cursor: grabbing; }
+    #progress.abcdesk-dragging #progress-fill { height: 6px; }
+    #progress.abcdesk-dragging #progress-thumb { transform: translate(-50%, -50%) scale(1.4); }
     #progress:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; border-radius: 2px; }
     #progress-time {
       flex: 0 0 auto;
@@ -774,6 +788,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       left: 0;
       z-index: 4;
       min-width: 180px;
+      max-width: calc(100vw - 24px);
       max-height: 40vh;
       overflow-y: auto;
       padding: 6px;
@@ -947,33 +962,47 @@ export class PreviewPanelManager implements vscode.Disposable {
     #keyboard-hint-left { left: 4px; }
     #keyboard-hint-right { right: 4px; }
     .abcdesk-keyboard-arrow[hidden] { display: none; }
+    /* 焦点可见性统一（SPEC-A11Y-07）：按钮 / 菜单触发 / 下拉 / 声部复选一律显示主题焦点环 */
+    button:focus-visible, summary:focus-visible, select:focus-visible, .abcdesk-voice-row input:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
     /* 低高度例外（D0）：不把谱面夹在上下固定区域之间，键盘回文档流随内容整体滚动；阈值为暂订实测项 */
     @media (max-height: 400px) {
       #keyboard { position: static; }
+      /* 低高度顶栏压缩（SPEC-PLAY-13）：至少保留播放 / 暂停与停止及关键状态摘要 */
+      #controls { padding: 4px 12px; }
+      #progress-row { padding: 0 12px 4px; }
+      #playback-status { padding: 0 12px 4px; }
     }
   </style>
 </head>
 <body>
   <div id="topbar">
     <div id="controls">
-      <button id="play" type="button"></button>
-      <button id="stop" type="button"></button>
-      <span id="speed-control">
-        <label id="speed-label" for="speed-input"></label>
-        <input id="speed-input" type="number" min="25" max="200" step="5" inputmode="numeric">
-        <span aria-hidden="true">%</span>
-        <button id="speed-reset" type="button"></button>
-        <span id="speed-hint" hidden></span>
+      <span class="abcdesk-control-group">
+        <button id="play" type="button"></button>
+        <button id="stop" type="button"></button>
       </span>
-      <details id="voices-menu">
-        <summary id="voices-summary"></summary>
-        <div id="voices-panel">
-          <button id="voices-pause" type="button" hidden></button>
-          <div id="voices-list"></div>
-        </div>
-      </details>
-      <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
-      <span id="playback-status" role="status" aria-live="polite"></span>
+      <span class="abcdesk-control-group">
+        <span id="speed-control">
+          <label id="speed-label" for="speed-input"></label>
+          <input id="speed-input" type="number" min="25" max="200" step="5" inputmode="numeric">
+          <span aria-hidden="true">%</span>
+          <button id="speed-reset" type="button"></button>
+          <span id="speed-hint" hidden></span>
+        </span>
+        <details id="voices-menu">
+          <summary id="voices-summary"></summary>
+          <div id="voices-panel">
+            <button id="voices-pause" type="button" hidden></button>
+            <div id="voices-list"></div>
+          </div>
+        </details>
+      </span>
+      <span class="abcdesk-control-group">
+        <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
+      </span>
     </div>
     <div id="progress-row">
       <div id="progress" role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -982,6 +1011,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       </div>
       <span id="progress-time"></span>
     </div>
+    <span id="playback-status" role="status" aria-live="polite" hidden></span>
   </div>
   <div id="score-region">
     <div id="content-status" role="status" aria-live="polite" hidden>
