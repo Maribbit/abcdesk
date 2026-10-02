@@ -1,9 +1,14 @@
 import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from 'abcjs';
-import { parseHostMessage, type DocumentMessage, type SourceHighlightRange } from '../core/messages';
+import { parseHostMessage, sameContext, type DocumentMessage, type SourceHighlightRange, type PreviewContext, type WebviewMessage, type LinkageUnavailableReason } from '../core/messages';
+import { TuneSession, sameSnapshot } from '../core/tuneSession';
+import { tuneAtSource } from '../core/tunes';
+import { toSourceRange, type MappedText } from '../core/sourceMap';
+import { TunePicker, tuneLabel } from './tunePicker';
+import { sourceEvent, sourceRanges, validateSourceTarget } from './tuneSource';
 import { PlaybackController, type PlaybackPhase } from './audio';
 import { KeyboardView, collectPitches } from './keyboard';
 import { t } from './l10n';
-import { SPEED_DEFAULT, formatClock, parseSpeedPercent, type VoiceEntry } from './playback';
+import { SPEED_DEFAULT, formatClock, parseSpeedPercent, voiceSignature, type VoiceEntry } from './playback';
 
 /**
  * 播放器 webview 入口（M0：渲染管线、播放主干、编辑更新管线与源码联动）。
@@ -71,6 +76,28 @@ const progressTimeElement = queryElement('progress-time');
 
 /** 播放中到达、待统一应用的最新文档（SPEC-STATE-07）。 */
 let pendingDocument: DocumentMessage | undefined;
+const session = new TuneSession();
+let currentDocument: DocumentMessage | undefined;
+let context: PreviewContext | undefined;
+let lastHostRequest = -1;
+let sourceRequestSequence = 0;
+let pendingTargetRequest: number | undefined;
+let transaction = false;
+let playable = false;
+let activeInput: MappedText | undefined;
+let activeSignature: string | null = null;
+let referenceLabel = '';
+let contentDetail = '';
+let renderOk = false;
+
+/** 统一补上当前已应用上下文，类型系统阻止旧协议遗漏。 */
+type ContextMessage = Extract<WebviewMessage, { context: PreviewContext }>;
+type WithoutContext<T> = T extends ContextMessage ? Omit<T, 'context'> : never;
+function post(message: WithoutContext<ContextMessage>): void {
+  if (context !== undefined) host.postMessage({ ...message, context });
+}
+
+const tunePicker = new TunePicker(queryElement('tunes'), queryElement<HTMLButtonElement>('confirm-tune'), chooseTune);
 /** 内容状态区的文案键：暂停后应用 / 旧谱参考 / 空状态。 */
 let contentStatusKey: string | null = null;
 /** 空状态是否显示"转到源码编辑"入口（SPEC-STATE-05）。 */
@@ -135,7 +162,9 @@ const keyboardView = new KeyboardView({
 
 /** 按当前相位刷新按钮图标与提示、状态文案并上报播放状态（SPEC-PLAY-01 / 13）。 */
 function refreshPlaybackUi(): void {
-  if (pendingDocument !== undefined) {
+  if (transaction) return;
+  rememberSettings();
+  if (pendingDocument !== undefined && session.selectionRequest === undefined) {
     const { phase } = controller.getStatus();
     if (phase === 'idle' || phase === 'paused') {
       // 暂停 / 停止 / 自然结束 / 隐藏或接替触发暂停：统一应用更新并归零（SPEC-STATE-07）
@@ -157,7 +186,11 @@ function refreshPlaybackUi(): void {
   stopButton.title = t('stop');
   stopButton.setAttribute('aria-label', t('stop'));
   // 停止仅在有可停止内容时可用；准备中保留（= 取消并归零，SPEC-PLAY-01）
-  stopButton.disabled = phase === 'idle';
+  stopButton.disabled = phase === 'idle' && session.selectionRequest === undefined;
+  playButton.disabled = !playable || session.selectionRequest !== undefined;
+  loopButton.disabled = !playable;
+  speedInputElement.disabled = !playable;
+  progressElement.setAttribute('aria-disabled', String(!playable));
   // 循环开关（SPEC-PLAY-03）：字形固定，持续状态经 aria-pressed 呈现（ON 态底色见样式）
   loopButton.title = t('loop');
   loopButton.setAttribute('aria-label', t('loop'));
@@ -170,7 +203,7 @@ function refreshPlaybackUi(): void {
   updateProgressUi();
   updateProgressPolling();
   // 宿主据此维持同一窗口内只有一处预览发声（SPEC-PLAY-01）
-  host.postMessage({ type: 'playback-state', state: phase });
+  post({ type: 'playback-state', state: phase });
 }
 
 /** 速度控件刷新（SPEC-PLAY-04）：标签与当前值；输入框聚焦时不覆写正在编辑的内容。 */
@@ -179,7 +212,7 @@ function updateSpeedUi(): void {
   speedLabelElement.textContent = t('speed-label');
   speedResetButton.title = t('speed-reset');
   speedResetButton.setAttribute('aria-label', t('speed-reset'));
-  speedResetButton.disabled = speed === SPEED_DEFAULT;
+  speedResetButton.disabled = !playable || speed === SPEED_DEFAULT;
   if (document.activeElement !== speedInputElement) {
     speedInputElement.value = String(speed);
   }
@@ -340,16 +373,106 @@ function applyPendingDocument(): void {
   renderAndReport(message);
 }
 
-/** 渲染并上报结果：两条渲染路径（直接应用与暂停后换版）共用（SPEC-CMD-07 的待起播请求据 rendered 执行）。 */
-function renderAndReport(message: DocumentMessage): void {
-  const ok = renderDocument(message);
-  host.postMessage({ type: 'rendered', version: message.version, ok });
+/** 只保存已提交且归属于当前有效曲目的设置，失败占位不覆盖历史记录。 */
+function rememberSettings(): void {
+  if (playable && session.selectionRequest === undefined) session.remember(controller.getSettings(), activeSignature);
+}
+
+function invalidateContext(message: DocumentMessage): void {
+  context = { viewId: message.viewId, revision: message.revision, version: message.version, selection: (context?.selection ?? 0) + 1 };
+  renderSequence += 1;
+  dragState = undefined;
+  progressElement.classList.remove('abcdesk-dragging');
+  playable = false;
+  activeInput = undefined;
+  sentTargetRanges = undefined;
+  post({ type: 'context-invalidated' });
+}
+
+function reportRendered(): void {
+  post({ type: 'rendered', ok: renderOk, linkable: playable });
+}
+
+/** SPEC-DOC-04：集中提交后才刷新；stop/setTune 的同步回调不能重入应用待更新。 */
+function renderAndReport(message: DocumentMessage, applied = false): void {
+  transaction = true;
+  if (!applied) {
+    rememberSettings();
+    session.apply(message);
+  }
+  const { initialRequest, ...snapshot } = message;
+  currentDocument = snapshot; // 初始化意图只消费一次，不随取消选曲或重渲染复活。
+  pendingDocument = undefined;
+  invalidateContext(message);
+  controller.setTune(undefined);
+  resetLinkageState();
+  let initialOffset: number | undefined;
+  const initial = initialRequest !== undefined && initialRequest.requestId > lastHostRequest ? initialRequest : undefined;
+  if (initial !== undefined) {
+    lastHostRequest = initial.requestId;
+    const candidate = tuneAtSource(session.catalog, initial.offset);
+    if (candidate !== undefined && validateSourceTarget(candidate, initial.offset)) {
+      session.select(candidate.index);
+      initialOffset = initial.offset;
+    }
+  }
+  renderOk = renderDocument(message);
+  tunePicker.update(session.catalog, session.selected);
+  transaction = false;
+  refreshPlaybackUi();
+  reportRendered();
+  if (initialOffset !== undefined) {
+    applyReadingMarker(initialOffset);
+    playFromOffset(initialOffset);
+  } else if (initial !== undefined && initial.requestId === lastHostRequest) {
+    post({ type: 'linkage-unavailable', reason: 'no-mapping' });
+  }
+}
+
+function chooseTune(index: number): void {
+  rememberSettings();
+  const request = session.beginSelection(index);
+  if (request === undefined || currentDocument === undefined) return;
+  transaction = true;
+  invalidateContext(currentDocument);
+  controller.setTune(undefined);
+  resetLinkageState();
+  contentStatusKey = 'switching-tune';
+  contentDetail = hasRenderedScore ? referenceLabel : '';
+  transaction = false;
+  updateContentStatus();
+  refreshPlaybackUi();
+  post({ type: 'select-tune', requestId: request.id });
+}
+
+/** 停止/隐藏/新意图取消等待；迟到选曲响应不能恢复之前的选择。 */
+function playbackAction(action: 'toggle' | 'pause' | 'stop'): void {
+  pendingTargetRequest = undefined;
+  dragState = undefined;
+  progressElement.classList.remove('abcdesk-dragging');
+  // 控制意图建立新的操作边界，但不重渲染谱面；较早的宿主起播不能越过本次停止/暂停。
+  if (context !== undefined) {
+    context = { ...context, selection: context.selection + 1 };
+    sentTargetRanges = undefined;
+    post({ type: 'context-invalidated', cancelRequests: true });
+  }
+  const waiting = session.selectionRequest !== undefined;
+  session.cancelSelection();
+  if (waiting && currentDocument !== undefined) renderAndReport(pendingDocument ?? currentDocument);
+  if (action === 'stop') controller.stop();
+  else if (action === 'pause') controller.pause();
+  else if (playable) controller.toggle();
+  refreshPlaybackUi();
+  reportRendered();
+  if (playable && targetOffset !== null) applyReadingMarker(targetOffset);
 }
 
 /** 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 暂停后应用提示与"转到源码编辑"入口。 */
 function updateContentStatus(): void {
-  contentStatusElement.hidden = contentStatusKey === null && !showRevealSource;
-  contentStatusTextElement.textContent = contentStatusKey === null ? '' : t(contentStatusKey);
+  const warnings = [contentStatusKey === null ? '' : t(contentStatusKey), contentDetail];
+  if (session.catalog.issues.length > 0 && contentStatusKey !== 'structure-unreliable') warnings.push(t('structure-unreliable'));
+  contentStatusTextElement.textContent = warnings.filter(Boolean).join(' ');
+  contentStatusElement.hidden = contentStatusTextElement.textContent === '' && !showRevealSource;
   revealSourceButton.hidden = !showRevealSource;
   if (showRevealSource) {
     revealSourceButton.textContent = t('reveal-source');
@@ -370,69 +493,71 @@ function showEmptyState(): void {
   updateContentStatus();
 }
 
-/** 渲染宿主推送的文档；返回渲染是否成功（SPEC-CMD-07 的待起播请求据此执行）。 */
+/** 渲染所选曲目的自包含输入；旧谱的归属标签独立于当前选择。 */
 function renderDocument(message: DocumentMessage): boolean {
-  // 来源文件名与“尚未保存”标记由预览标签标题显示（SPEC-CMD-06），webview 内不重复呈现
-  renderSequence += 1; // 版本推进：拖动中的进度提交据此丢弃（SPEC-PLAY-05）
-
-  // 联动状态随渲染重建（SPEC-PLAY-11）：映射、选中与旧标记引用全部清空，成功后再建立新映射
-  resetLinkageState();
-
-  if (message.abc.trim() === '') {
-    // 完全空白：直接进入空状态，不交给渲染器（SPEC-STATE-05）
+  contentDetail = '';
+  if (session.catalog.tunes.length === 0 && session.catalog.issues.length === 0) {
     showEmptyState();
     return true;
   }
-
-  // 先留旧谱节点引用：渲染可能中途失败，失败时恢复，保证保留上一次成功渲染的谱面（SPEC-STATE-03）
-  const previousNodes = Array.from(scoreElement.childNodes);
-  let tune: TuneObject | undefined;
-  try {
-    tune = renderAbc(scoreElement, message.abc, {
-      responsive: 'resize',
-      add_classes: true,
-      clickListener: (abcElem) => handleScoreClick(abcElem),
-    })[0];
-  } catch (error) {
-    console.error('ABC Desk: render failed', error);
-    if (hasRenderedScore) {
-      // 保留旧谱并标记"仅供参考"（SPEC-STATE-03）；旧谱与源码的联动保持停用
-      scoreElement.replaceChildren(...previousNodes);
-      contentStatusKey = 'stale-score';
-      keyboardView.clearActivePitches(); // 旧谱参考清除键盘动态提示，键盘随旧版本保留（SPEC-STATE-03）
-    } else {
-      // 首次失败且无旧谱：错误占位（SPEC-STATE-03）
-      scoreElement.textContent = '';
-      const fallback = document.createElement('p');
-      fallback.textContent = t('render-failed');
-      scoreElement.appendChild(fallback);
-      contentStatusKey = null;
-      keyboardView.clear();
-    }
-    showRevealSource = false;
-    controller.setTune(undefined); // 禁用旧谱播放，避免播放已失效版本（SPEC-STATE-03）
-    updateContentStatus();
+  const selected = session.current;
+  if (selected === undefined || !selected.reliable) {
+    showUnavailableScore(selected === undefined && !session.catalog.initialBlocked ? 'choose-tune' : 'structure-unreliable');
     return false;
   }
-
-  if (tune === undefined || !tuneHasNotes(tune)) {
-    // 空白内容：空状态与转到源码编辑入口，不把旧谱当成当前内容（SPEC-STATE-05）
-    showEmptyState();
+  const previousNodes = Array.from(scoreElement.childNodes);
+  const sequence = renderSequence;
+  try {
+    const tune = renderAbc(scoreElement, selected.input.text, {
+      responsive: 'resize',
+      add_classes: true,
+      clickListener: (abcElem) => { if (sequence === renderSequence) handleScoreClick(abcElem); },
+    })[0];
+    if (tune === undefined || !tuneHasNotes(tune)) {
+      scoreElement.replaceChildren(...previousNodes);
+      showUnavailableScore('no-notes');
+      return false;
+    }
+    activeSignature = voiceSignature(tune, selected.input.text);
+    const restored = session.settingsFor(activeSignature);
+    controller.setTune(tune, restored.settings);
+    activeInput = selected.input;
+    playable = true;
+    hasRenderedScore = true;
+    referenceLabel = t('reference-tune').replace('{0}', tuneLabel(session.catalog, selected.index))
+      .replace('{1}', selected.id ?? t('missing-tune-id')).replace('{2}', String(message.version));
+    contentStatusKey = restored.voicesChanged ? 'voices-changed' : null;
+    showRevealSource = session.catalog.issues.length > 0;
+    session.remember(controller.getSettings(), activeSignature);
+    // 未提交的速度输入不跨曲保留。
+    speedInputElement.value = String(controller.getSpeed());
+    snapshotNativePaint();
+    timingEvents = controller.getTimings();
+    keyboardView.setTune(collectPitches(timingEvents));
+    updateContentStatus();
     return true;
+  } catch (error) {
+    console.error('ABC Desk: render failed', error);
+    scoreElement.replaceChildren(...previousNodes);
+    showUnavailableScore('render-failed');
+    return false;
   }
+}
 
-  hasRenderedScore = true;
-  contentStatusKey = null;
-  showRevealSource = false;
-  controller.setTune(tune);
-  // 快照 abcjs 绘制的原生 fill 属性（SPEC-PLAY-11）：原生点选会覆写该属性，清除标记时按此还原
-  snapshotNativePaint();
-  // 建立字符↔演奏时序映射（SPEC-PLAY-11 / 12）：与播放共用同一份时序（P02：反复取第一次出现）
-  timingEvents = controller.getTimings();
-  // 键盘按当前版本的材料音高重建音域（SPEC-PLAY-08）：单曲目材料、含静音声部，不合并其他曲目
-  keyboardView.setTune(collectPitches(timingEvents));
+function showUnavailableScore(reason: string): void {
+  contentStatusKey = reason;
+  if (hasRenderedScore) {
+    contentDetail = `${t('stale-score')} ${referenceLabel}`;
+    keyboardView.clearActivePitches();
+  } else {
+    scoreElement.textContent = '';
+    keyboardView.clear();
+  }
+  playable = false;
+  activeInput = undefined;
+  controller.setTune(undefined);
+  showRevealSource = true;
   updateContentStatus();
-  return true;
 }
 
 /** 谱面是否含可显示的音符（空状态判据，SPEC-STATE-05）：休止符（rest）也是 note 条目，全休止符不算空文件。 */
@@ -478,41 +603,12 @@ function elementsOf(event: NoteTimingEvent): SVGElement[] {
  * 反复中多次出现的音符按演奏时序取第一次出现（P02 决议，见 docs/decisions.md）。
  */
 function findTimingEvent(offset: number): NoteTimingEvent | undefined {
-  let found: NoteTimingEvent | undefined;
-  for (const event of timingEvents) {
-    if (event.type !== 'event' || !eventRangeContains(event, offset)) {
-      continue;
-    }
-    if (found === undefined || event.milliseconds < found.milliseconds) {
-      found = event;
-    }
-  }
-  return found;
+  return activeInput === undefined ? undefined : sourceEvent(timingEvents, activeInput, offset);
 }
 
-/** 事件是否覆盖该字符偏移；tie 场景下字符范围与元素可能错位，按较短长度比对。 */
-function eventRangeContains(event: NoteTimingEvent, offset: number): boolean {
-  const starts = event.startCharArray ?? [];
-  const ends = event.endCharArray ?? [];
-  const count = Math.min(starts.length, ends.length);
-  for (let index = 0; index < count; index += 1) {
-    if (offset >= starts[index] && offset < ends[index]) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** 播放高亮对应的源码字符区间（SPEC-PLAY-11 的源码装饰依据）。 */
-function sourceRangesOf(event: NoteTimingEvent): Array<{ start: number; end: number }> {
-  const starts = event.startCharArray ?? [];
-  const ends = event.endCharArray ?? [];
-  const count = Math.min(starts.length, ends.length);
-  const ranges: Array<{ start: number; end: number }> = [];
-  for (let index = 0; index < count; index += 1) {
-    ranges.push({ start: starts[index], end: ends[index] });
-  }
-  return ranges;
+/** 播放高亮只回传连续、可靠的当前曲原文范围。 */
+function sourceRangesOf(event: NoteTimingEvent): SourceHighlightRange[] {
+  return activeInput === undefined ? [] : sourceRanges(event, activeInput).slice(0, 16);
 }
 
 /**
@@ -528,18 +624,15 @@ function syncTargetSourceRanges(ranges: SourceHighlightRange[]): void {
     return;
   }
   sentTargetRanges = serialized;
-  host.postMessage({ type: 'target-ranges', ranges });
+  post({ type: 'target-ranges', ranges });
 }
 
 /** 联动是否处于停用窗口（SPEC-PLAY-11）：有待应用的新版本或当前为旧谱参考时不可定位 / 起播。 */
-function linkageUnavailableReason(): 'update-pending' | 'stale-score' | undefined {
-  if (pendingDocument !== undefined) {
-    return 'update-pending';
-  }
-  if (contentStatusKey === 'stale-score') {
-    return 'stale-score';
-  }
-  return undefined;
+function linkageUnavailableReason(): LinkageUnavailableReason | undefined {
+  if (pendingDocument !== undefined || session.selectionRequest !== undefined) return 'update-pending';
+  if (session.selected === null) return session.catalog.initialBlocked ? 'structure-unreliable' : 'choose-tune';
+  if (!session.current?.reliable) return 'structure-unreliable';
+  return playable ? undefined : 'stale-score';
 }
 
 /** 点击谱面音符（SPEC-PLAY-11 / 12）：设为目标并请求源码定位，焦点留在预览、不改变播放位置、不额外发声。 */
@@ -551,26 +644,27 @@ function handleScoreClick(abcElem: AbcElem): void {
     applyTarget(null);
     return;
   }
-  // 点选加入目标（SPEC-PLAY-11 / 12）：与查阅光标共用同一目标，后发生者胜
-  applyTarget(startChar);
   const unavailable = linkageUnavailableReason();
   if (unavailable !== undefined) {
-    host.postMessage({ type: 'linkage-unavailable', reason: unavailable });
+    post({ type: 'linkage-unavailable', reason: unavailable });
     return;
   }
-  host.postMessage({ type: 'reveal-range', start: startChar, end: endChar });
+  const range = activeInput === undefined ? undefined : toSourceRange(activeInput, startChar, endChar);
+  if (range === undefined) { applyTarget(null); return; }
+  applyTarget(range.start);
+  post({ type: 'reveal-range', requestId: ++sourceRequestSequence, ...range });
 }
 
 /** "从此处播放"公共路径（SPEC-PLAY-12）：映射不可靠或联动停用时说明原因，不悄悄从头播放。 */
 function playFromOffset(offset: number): void {
   const unavailable = linkageUnavailableReason();
   if (unavailable !== undefined) {
-    host.postMessage({ type: 'linkage-unavailable', reason: unavailable });
+    post({ type: 'linkage-unavailable', reason: unavailable });
     return;
   }
   const event = findTimingEvent(offset);
   if (event === undefined) {
-    host.postMessage({ type: 'linkage-unavailable', reason: 'no-mapping' });
+    post({ type: 'linkage-unavailable', reason: 'no-mapping' });
     return;
   }
   controller.playFromMs(event.milliseconds);
@@ -578,6 +672,23 @@ function playFromOffset(offset: number): void {
 
 /** 从源码光标起播（SPEC-PLAY-12）：偏移来自宿主推送，映射在 webview 内完成。 */
 function startFromCursor(offset: number): void {
+  if (pendingDocument !== undefined) { post({ type: 'linkage-unavailable', reason: 'update-pending' }); return; }
+  const candidate = tuneAtSource(session.catalog, offset);
+  if (candidate === undefined || !validateSourceTarget(candidate, offset)) {
+    // 后来的无效请求仍接替尚未发声的旧意图，但不打断已经有效播放的音乐。
+    if (session.selectionRequest !== undefined) playbackAction('pause');
+    else if (controller.getStatus().phase === 'preparing') controller.pause();
+    post({ type: 'linkage-unavailable', reason: candidate === undefined && session.catalog.issues.some((range) => offset >= range.start && offset < range.end) ? 'structure-unreliable' : 'no-mapping' });
+    return;
+  }
+  // 验证完成前不停止当前有效音乐；成功后才取消旧选择并提交目标曲。
+  rememberSettings();
+  session.cancelSelection();
+  if (candidate.index !== session.selected || !playable) {
+    session.select(candidate.index);
+    if (currentDocument !== undefined) renderAndReport(currentDocument, true);
+  }
+  applyReadingMarker(offset);
   playFromOffset(offset);
 }
 
@@ -585,7 +696,7 @@ function startFromCursor(offset: number): void {
 function startFromTarget(): void {
   if (targetOffset === null) {
     const unavailable = linkageUnavailableReason();
-    host.postMessage({ type: 'linkage-unavailable', reason: unavailable ?? 'no-selection' });
+    post({ type: 'linkage-unavailable', reason: unavailable ?? 'no-selection' });
     return;
   }
   playFromOffset(targetOffset);
@@ -605,6 +716,7 @@ function applyReadingMarker(offset: number | null): void {
  * 偏移无可靠映射（如旧谱参考、点选后等待重渲染）时不呈现标记、保留目标，由按钮说明原因。
  */
 function applyTarget(offset: number | null): void {
+  if (targetOffset !== offset) pendingTargetRequest = undefined;
   clearTargetMarks();
   targetOffset = offset;
   const event = offset === null ? undefined : findTimingEvent(offset);
@@ -734,7 +846,7 @@ function applyPlayingHighlight(event: NoteTimingEvent | null): void {
   playingElements = [];
   if (event === null || event.type !== 'event') {
     keyboardView.setActivePitches([]);
-    host.postMessage({ type: 'source-highlight', ranges: [] });
+    post({ type: 'source-highlight', ranges: [] });
     return;
   }
   playingElements = elementsOf(event);
@@ -742,7 +854,7 @@ function applyPlayingHighlight(event: NoteTimingEvent | null): void {
   // 键盘提示跟随记谱材料的演奏时间、含静音声部（SPEC-PLAY-09）；视口外只显示方向箭头（SPEC-PLAY-08）
   keyboardView.setActivePitches(collectPitches([event]));
   // 源码只高亮、不滚动、不移动光标；由宿主对可见编辑器设置装饰（SPEC-PLAY-11）
-  host.postMessage({ type: 'source-highlight', ranges: sourceRangesOf(event) });
+  if (linkageUnavailableReason() === undefined) post({ type: 'source-highlight', ranges: sourceRangesOf(event) });
   if (!followPaused) {
     scrollIntoViewIfNeeded(playingElements);
   }
@@ -837,57 +949,64 @@ function updatePlayFromHereButton(): void {
 
 window.addEventListener('message', (event: MessageEvent) => {
   const message = parseHostMessage(event.data);
-  if (message === undefined) {
-    return;
-  }
+  if (message === undefined) return;
   if (message.type === 'document') {
-    // 播放中到达的新版本：缓存并提示，暂停 / 停止 / 自然结束时统一应用（SPEC-STATE-07）；
-    // 期间旧谱与源码的联动按不可用说明（SPEC-PLAY-11），高亮由宿主清除
-    if (controller.getStatus().phase === 'playing') {
+    if (currentDocument !== undefined && (message.viewId !== currentDocument.viewId || message.uri !== currentDocument.uri || message.revision < (pendingDocument ?? currentDocument).revision)) return;
+    if (sameSnapshot(session.snapshot, message)) {
+      if (session.selectionRequest === undefined) reportRendered();
+      return;
+    }
+    const phase = controller.getStatus().phase;
+    if (phase === 'playing' || phase === 'preparing' || session.selectionRequest !== undefined) {
       pendingDocument = message;
-      contentStatusKey = 'update-pending';
+      session.receive(message, true);
+      contentStatusKey = session.selectionRequest === undefined ? 'update-pending' : 'switching-tune';
       showRevealSource = false;
+      applyTarget(null);
       updateContentStatus();
-      return; // 不渲染也不上报：换版在应用时机执行
+      return;
     }
     renderAndReport(message);
     return;
   }
+  if (message.type === 'selection-snapshot') {
+    if (message.viewId !== context?.viewId || message.document.uri !== currentDocument?.uri) return;
+    const latest = pendingDocument !== undefined && pendingDocument.revision > message.document.revision ? pendingDocument : message.document;
+    if (!session.completeSelection(message.requestId, latest)) return;
+    renderAndReport(latest, true);
+    return;
+  }
+  if (message.type === 'playback') {
+    if (message.viewId !== context?.viewId || message.requestId <= lastHostRequest) return;
+    if (message.action === 'toggle' && !sameContext(context, message.context)) return;
+    lastHostRequest = message.requestId;
+    playbackAction(message.action);
+    return;
+  }
+  if (!sameContext(context, message.context)) return;
   if (message.type === 'cursor') {
-    applyReadingMarker(message.offset);
+    if (linkageUnavailableReason() === undefined) applyReadingMarker(message.offset);
     return;
   }
-  if (message.type === 'play-from-cursor') {
-    startFromCursor(message.offset);
-    return;
-  }
-  if (message.type === 'play-from-selection') {
-    startFromTarget();
-    return;
-  }
-  switch (message.action) {
-    case 'toggle':
-      controller.toggle();
-      break;
-    case 'pause':
-      controller.pause();
-      break;
-    case 'stop':
-      controller.stop();
-      break;
-  }
+  if (message.requestId <= lastHostRequest) return;
+  if (message.type === 'play-from-selection' && message.targetRequestId !== undefined && message.targetRequestId !== pendingTargetRequest) return;
+  pendingTargetRequest = undefined;
+  lastHostRequest = message.requestId;
+  if (message.type === 'play-from-cursor') startFromCursor(message.offset);
+  else startFromTarget();
 });
 
 // 循环开关（SPEC-PLAY-03）：切换不改变当前播放相位，下一次自然结束边界起生效
 loopButton.addEventListener('click', () => controller.setLoopEnabled(!controller.getLoopEnabled()));
-playButton.addEventListener('click', () => controller.toggle());
-stopButton.addEventListener('click', () => controller.stop());
+playButton.addEventListener('click', () => playbackAction('toggle'));
+stopButton.addEventListener('click', () => playbackAction('stop'));
 // "从此处播放"（SPEC-PLAY-12）：请求宿主按命令路径起播（先刷新待更新文档、失败说明复用命令路径）
-playFromHereButton.addEventListener('click', () =>
-  host.postMessage({ type: 'play-from-selection-request' }),
-);
+playFromHereButton.addEventListener('click', () => {
+  pendingTargetRequest = ++sourceRequestSequence;
+  post({ type: 'play-from-selection-request', requestId: pendingTargetRequest });
+});
 // 空状态"转到源码编辑"入口（SPEC-STATE-05）：请求宿主打开来源文档并转移焦点
-revealSourceButton.addEventListener('click', () => host.postMessage({ type: 'reveal-source' }));
+revealSourceButton.addEventListener('click', () => { if (context !== undefined) host.postMessage({ type: 'reveal-source', viewId: context.viewId }); });
 // “恢复跟随”（SPEC-PLAY-11）：立即回到当前播放位置并恢复自动跟随
 followResumeButton.addEventListener('click', () => {
   followPaused = false;
@@ -907,7 +1026,7 @@ speedInputElement.addEventListener('keydown', (event: KeyboardEvent) => {
 });
 speedResetButton.addEventListener('click', () => controller.setSpeed(SPEED_DEFAULT));
 // 声部菜单（SPEC-PLAY-06）：播放中先暂停再调整
-voicesPauseButton.addEventListener('click', () => controller.pause());
+voicesPauseButton.addEventListener('click', () => playbackAction('pause'));
 // 菜单 Esc 关闭并把焦点还给触发钮（SPEC-A11Y-05）
 voicesMenuElement.addEventListener('keydown', (event: KeyboardEvent) => {
   if (event.key !== 'Escape' || !voicesMenuElement.open) {
@@ -931,7 +1050,7 @@ voicesMenuElement.addEventListener('toggle', () => {
 });
 // 进度条（SPEC-PLAY-05）：拖动预览、松手提交；取消拖动（Esc / pointercancel）不提交
 progressElement.addEventListener('pointerdown', (event: PointerEvent) => {
-  if (event.button !== 0) {
+  if (event.button !== 0 || !playable) {
     return;
   }
   event.preventDefault(); // 拖动不触发文本选择，焦点显式移到滑块（P06：方向键立即可用）
@@ -973,6 +1092,7 @@ progressElement.addEventListener('pointercancel', () => {
   updateProgressUi();
 });
 progressElement.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (!playable) return;
   if (dragState !== undefined) {
     if (event.key === 'Escape') {
       dragState = undefined;
@@ -1037,7 +1157,7 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
 
 // 预览局部空格与按钮、命令共用操作规则（SPEC-CMD-11）；按钮等交互元素上的空格保留原生行为
 document.addEventListener('keydown', (event: KeyboardEvent) => {
-  if (event.key !== ' ' || event.defaultPrevented) {
+  if (event.key !== ' ' || event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) {
     return;
   }
   const target = event.target as HTMLElement | null;
@@ -1046,11 +1166,14 @@ document.addEventListener('keydown', (event: KeyboardEvent) => {
     return;
   }
   event.preventDefault();
-  controller.toggle();
+  playbackAction('toggle');
 });
 
 // 面板销毁前立即停音并停止进度轮询（保留上下文时隐藏不会触发此处）
 window.addEventListener('pagehide', () => {
+  session.cancelSelection();
+  context = undefined;
+  renderSequence += 1;
   if (progressTimer !== undefined) {
     window.clearInterval(progressTimer);
     progressTimer = undefined;

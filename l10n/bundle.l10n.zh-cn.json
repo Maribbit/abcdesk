@@ -7,6 +7,8 @@
   "The file has unapplied changes; pause first to apply them.": "文件有尚未应用的更改；请先暂停以应用。",
   "The preview shows an older version of the score, so it cannot be used.": "预览显示的是旧版本曲谱，暂不可用。",
   "The source document is unavailable.": "来源文档不可用。",
+  "Please select a tune again.": "请重新选择曲目。",
+  "Some tune boundaries could not be identified. Check the ABC source.": "部分曲目分界无法可靠识别，请检查 ABC 源码。",
   "Select a tune to export": "选择要导出的曲目",
   "Exporting MIDI…": "正在导出 MIDI…",
   "Exporting SVG…": "正在导出 SVG…",

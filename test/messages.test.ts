@@ -1,189 +1,110 @@
 import { describe, expect, it } from 'vitest';
-import { parseHostMessage, parseWebviewMessage } from '../src/core/messages';
+import { parseHostMessage, parseWebviewMessage, sameContext } from '../src/core/messages';
 
-// 绑定见 docs/spec/env.md（ENV-04）；标题以 [SPEC-域-序号] 前置，由 scripts/spec-check.mjs 双向校验。
+const context = { viewId: 2, revision: 4, version: 3, selection: 1 };
+const document = { type: 'document', uri: 'untitled:1', fileName: '1', abc: 'X:1\nK:C\nCDEF|', isUntitled: true, version: 3, viewId: 2, revision: 4 };
 
-describe('消息桥校验（SPEC-ENV-04）', () => {
-  it('[SPEC-ENV-04] webview 消息按类型校验：ready 通过，未知 / 缺类型 / 非对象拒绝', () => {
-    expect(parseWebviewMessage({ type: 'ready' })).toEqual({ type: 'ready' });
-
-    // 缺类型、未知类型、非对象一律拒绝
-    expect(parseWebviewMessage({})).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'play' })).toBeUndefined();
-    expect(parseWebviewMessage('ready')).toBeUndefined();
-    expect(parseWebviewMessage(null)).toBeUndefined();
-    expect(parseWebviewMessage(undefined)).toBeUndefined();
-
-    // 额外字段被丢弃，不经消息桥传递
-    expect(parseWebviewMessage({ type: 'ready', filePath: '/etc/passwd' })).toEqual({ type: 'ready' });
-  });
-
-  it('[SPEC-ENV-04] rendered 消息校验渲染版本与结果：越界 / 非整数版本拒绝，额外字段丢弃', () => {
-    expect(parseWebviewMessage({ type: 'rendered', version: 3, ok: true })).toEqual({
-      type: 'rendered',
-      version: 3,
-      ok: true,
-    });
-
-    // 版本必须是非负整数，结果必须是布尔值
-    expect(parseWebviewMessage({ type: 'rendered', version: -1, ok: true })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'rendered', version: 1.5, ok: true })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'rendered', version: '3', ok: true })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'rendered', version: 3 })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'rendered', version: 3, ok: 'yes' })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'rendered', version: 3, ok: true, path: '/etc/passwd' })).toEqual({
-      type: 'rendered',
-      version: 3,
-      ok: true,
-    });
-  });
-
-  it('[SPEC-ENV-04] playback-state 仅接受四个已登记相位，未知相位拒绝', () => {
-    for (const state of ['idle', 'preparing', 'playing', 'paused'] as const) {
-      expect(parseWebviewMessage({ type: 'playback-state', state })).toEqual({
-        type: 'playback-state',
-        state,
-      });
+describe('双向消息白名单', () => {
+  it('[SPEC-ENV-04] 非对象、未知类型和旧协议一律拒绝', () => {
+    for (const value of [null, undefined, 'ready', [], {}, { type: 'unknown' }]) {
+      expect(parseWebviewMessage(value)).toBeUndefined();
+      expect(parseHostMessage(value)).toBeUndefined();
     }
-
-    expect(parseWebviewMessage({ type: 'playback-state', state: 'buffering' })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'playback-state' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'rendered', version: 3, ok: true })).toBeUndefined();
+    expect(parseHostMessage({ type: 'playback', action: 'stop' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'ready', uri: 'ignored' })).toEqual({ type: 'ready' });
+    expect(parseWebviewMessage({ type: 'reveal-source', viewId: 2, uri: 'ignored' })).toEqual({ type: 'reveal-source', viewId: 2 });
   });
 
-  it('[SPEC-ENV-04] reveal-source 无载荷请求：额外字段丢失，目标路径不由 webview 指定', () => {
-    expect(parseWebviewMessage({ type: 'reveal-source' })).toEqual({ type: 'reveal-source' });
-    expect(parseWebviewMessage({ type: 'reveal-source', uri: 'file:///etc/passwd' })).toEqual({
-      type: 'reveal-source',
-    });
-  });
-
-  it('[SPEC-ENV-04] play-from-selection-request 无载荷请求：额外字段丢弃，位置与目标不由 webview 指定', () => {
-    expect(parseWebviewMessage({ type: 'play-from-selection-request' })).toEqual({
-      type: 'play-from-selection-request',
-    });
-    expect(parseWebviewMessage({ type: 'play-from-selection-request', offset: 5 })).toEqual({
-      type: 'play-from-selection-request',
-    });
-  });
-
-  it('[SPEC-ENV-04] webview 侧同样校验宿主消息：document 形状完整才接受，playback 仅限三个动作', () => {
-    const documentMessage = {
-      type: 'document',
-      uri: 'untitled:Untitled-1',
-      fileName: 'Untitled-1',
-      abc: 'X:1\nK:C\nC D E F|',
-      isUntitled: true,
-      version: 0,
-    };
-    expect(parseHostMessage(documentMessage)).toEqual(documentMessage);
-    expect(parseHostMessage({ ...documentMessage, version: -1 })).toBeUndefined();
-    expect(parseHostMessage({ ...documentMessage, abc: undefined })).toBeUndefined();
-    expect(parseHostMessage({ type: 'document' })).toBeUndefined();
-
-    expect(parseHostMessage({ type: 'playback', action: 'toggle' })).toEqual({
-      type: 'playback',
-      action: 'toggle',
-    });
-    expect(parseHostMessage({ type: 'playback', action: 'pause' })).toEqual({
-      type: 'playback',
-      action: 'pause',
-    });
-    expect(parseHostMessage({ type: 'playback', action: 'stop' })).toEqual({
-      type: 'playback',
-      action: 'stop',
-    });
-    expect(parseHostMessage({ type: 'playback', action: 'seek' })).toBeUndefined();
-    expect(parseHostMessage({ type: 'playback' })).toBeUndefined();
-    expect(parseHostMessage('playback')).toBeUndefined();
-    expect(parseHostMessage({ type: 'playback', action: 'toggle', filePath: '/etc/passwd' })).toEqual({
-      type: 'playback',
-      action: 'toggle',
-    });
-  });
-
-  it('[SPEC-ENV-04] reveal-range / linkage-unavailable / source-highlight / target-ranges 校验：偏移为字符偏移、原因限登记枚举、区间数组有上限', () => {
-    // 点击定位请求：start / end 为非负整数
-    expect(parseWebviewMessage({ type: 'reveal-range', start: 8, end: 10 })).toEqual({
-      type: 'reveal-range',
-      start: 8,
-      end: 10,
-    });
-    expect(parseWebviewMessage({ type: 'reveal-range', start: 8 })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'reveal-range', start: -1, end: 10 })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'reveal-range', start: 1.5, end: 2 })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'reveal-range', start: 0, end: 0 })).toEqual({
-      type: 'reveal-range',
-      start: 0,
-      end: 0,
-    });
-
-    // 联动说明：只接受四个登记原因
-    for (const reason of ['no-mapping', 'no-selection', 'update-pending', 'stale-score'] as const) {
-      expect(parseWebviewMessage({ type: 'linkage-unavailable', reason })).toEqual({
-        type: 'linkage-unavailable',
-        reason,
-      });
+  it('[SPEC-ENV-04] 所有上下文字段必须是安全非负整数，额外字段丢弃', () => {
+    const rendered = { type: 'rendered', context, ok: true, linkable: true };
+    expect(parseWebviewMessage({ ...rendered, context: { ...context, uri: 'ignored' }, path: 'ignored' })).toEqual(rendered);
+    for (const key of Object.keys(context)) {
+      for (const value of [undefined, -1, 1.5, '2', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(parseWebviewMessage({ ...rendered, context: { ...context, [key]: value } })).toBeUndefined();
+        expect(parseHostMessage({ type: 'cursor', context: { ...context, [key]: value }, offset: 0 })).toBeUndefined();
+      }
     }
-    expect(parseWebviewMessage({ type: 'linkage-unavailable', reason: 'other' })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'linkage-unavailable' })).toBeUndefined();
-
-    // 播放高亮回传：区间数组（空数组 = 清除），非法项与超限拒绝，额外字段丢弃
-    expect(parseWebviewMessage({ type: 'source-highlight', ranges: [] })).toEqual({
-      type: 'source-highlight',
-      ranges: [],
-    });
-    expect(parseWebviewMessage({ type: 'source-highlight', ranges: [{ start: 1, end: 2 }] })).toEqual({
-      type: 'source-highlight',
-      ranges: [{ start: 1, end: 2 }],
-    });
-    expect(
-      parseWebviewMessage({ type: 'source-highlight', ranges: [{ start: 1, end: 2, extra: true }] }),
-    ).toEqual({ type: 'source-highlight', ranges: [{ start: 1, end: 2 }] });
-    expect(parseWebviewMessage({ type: 'source-highlight', ranges: [{ start: 1 }] })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'source-highlight', ranges: 'x' })).toBeUndefined();
-    expect(
-      parseWebviewMessage({
-        type: 'source-highlight',
-        ranges: Array.from({ length: 17 }, (_, index) => ({ start: index, end: index + 1 })),
-      }),
-    ).toBeUndefined();
-
-    // 目标轮廓回传（SPEC-PLAY-11）：空数组 = 清除，非法项与超限拒绝，额外字段丢弃
-    expect(parseWebviewMessage({ type: 'target-ranges', ranges: [] })).toEqual({
-      type: 'target-ranges',
-      ranges: [],
-    });
-    expect(parseWebviewMessage({ type: 'target-ranges', ranges: [{ start: 3, end: 7 }] })).toEqual({
-      type: 'target-ranges',
-      ranges: [{ start: 3, end: 7 }],
-    });
-    expect(
-      parseWebviewMessage({ type: 'target-ranges', ranges: [{ start: 3, end: 7, extra: true }] }),
-    ).toEqual({ type: 'target-ranges', ranges: [{ start: 3, end: 7 }] });
-    expect(parseWebviewMessage({ type: 'target-ranges', ranges: [{ start: 3 }] })).toBeUndefined();
-    expect(parseWebviewMessage({ type: 'target-ranges' })).toBeUndefined();
+    expect(parseWebviewMessage({ ...rendered, ok: 'yes' })).toBeUndefined();
+    expect(parseWebviewMessage({ ...rendered, linkable: undefined })).toBeUndefined();
+    expect(sameContext(context, { ...context })).toBe(true);
+    for (const key of Object.keys(context)) expect(sameContext(context, { ...context, [key]: 100 })).toBe(false);
+    expect(sameContext(undefined, context)).toBe(false);
   });
 
-  it('[SPEC-ENV-04] 宿主联动消息校验：cursor 允许 null 清除、play-from-cursor 需要字符偏移、play-from-selection 无载荷', () => {
-    expect(parseHostMessage({ type: 'cursor', offset: 12 })).toEqual({ type: 'cursor', offset: 12 });
-    expect(parseHostMessage({ type: 'cursor', offset: null })).toEqual({ type: 'cursor', offset: null });
-    expect(parseHostMessage({ type: 'cursor' })).toBeUndefined();
-    expect(parseHostMessage({ type: 'cursor', offset: -1 })).toBeUndefined();
-    expect(parseHostMessage({ type: 'cursor', offset: 1.5 })).toBeUndefined();
+  it('[SPEC-ENV-04] 停音动作按实例与请求编号校验，不强制匹配最新文档版本', () => {
+    for (const action of ['toggle', 'pause', 'stop']) {
+      const message = { type: 'playback', viewId: 2, requestId: 5, action, ...(action === 'toggle' ? { context } : {}) };
+      expect(parseHostMessage({ ...message, uri: 'ignored' })).toEqual(message);
+    }
+    for (const state of ['idle', 'preparing', 'playing', 'paused']) {
+      expect(parseWebviewMessage({ type: 'playback-state', context, state })).toEqual({ type: 'playback-state', context, state });
+    }
+    expect(parseWebviewMessage({ type: 'playback-state', context, state: 'unknown' })).toBeUndefined();
+    expect(parseHostMessage({ type: 'playback', viewId: 2, requestId: 5, action: 'seek' })).toBeUndefined();
+  });
 
-    expect(parseHostMessage({ type: 'play-from-cursor', offset: 0 })).toEqual({
-      type: 'play-from-cursor',
-      offset: 0,
-    });
-    expect(parseHostMessage({ type: 'play-from-cursor', offset: -2 })).toBeUndefined();
-    expect(parseHostMessage({ type: 'play-from-cursor' })).toBeUndefined();
-    expect(
-      parseHostMessage({ type: 'play-from-cursor', offset: 3, uri: 'file:///etc/passwd' }),
-    ).toEqual({ type: 'play-from-cursor', offset: 3 });
+  it('[SPEC-ENV-04] 范围必须非空正向且安全；数组最多16项，额外路径丢弃', () => {
+    const ranges = [{ start: 1, end: 2 }];
+    for (const type of ['source-highlight', 'target-ranges']) {
+      expect(parseWebviewMessage({ type, context, ranges: [] })).toEqual({ type, context, ranges: [] });
+      expect(parseWebviewMessage({ type, context, ranges: [{ ...ranges[0], uri: 'ignored' }] })).toEqual({ type, context, ranges });
+      expect(parseWebviewMessage({ type, context, ranges: Array.from({ length: 17 }, () => ranges[0]) })).toBeUndefined();
+      expect(parseWebviewMessage({ type, context, ranges: 'x' })).toBeUndefined();
+    }
+    for (const range of [{ start: 0, end: 0 }, { start: 8, end: 7 }, { start: -1, end: 1 }, { start: 0.5, end: 1 }, { start: 0, end: Infinity }, { start: 1 }]) {
+      expect(parseWebviewMessage({ type: 'reveal-range', requestId: 1, context, ...range })).toBeUndefined();
+      expect(parseWebviewMessage({ type: 'target-ranges', context, ranges: [range] })).toBeUndefined();
+    }
+    expect(parseWebviewMessage({ type: 'reveal-range', requestId: 1, context, start: 1, end: 2 })).toEqual({ type: 'reveal-range', requestId: 1, context, start: 1, end: 2 });
+  });
 
-    expect(parseHostMessage({ type: 'play-from-selection' })).toEqual({ type: 'play-from-selection' });
-    expect(parseHostMessage({ type: 'play-from-selection', offset: 5 })).toEqual({
-      type: 'play-from-selection',
-    });
+  it('[SPEC-ENV-04] 联动说明仅接受登记原因，目标请求不能夹带偏移或 URI', () => {
+    for (const reason of ['no-mapping', 'no-selection', 'update-pending', 'stale-score', 'choose-tune', 'structure-unreliable']) {
+      expect(parseWebviewMessage({ type: 'linkage-unavailable', context, reason })).toEqual({ type: 'linkage-unavailable', context, reason });
+    }
+    expect(parseWebviewMessage({ type: 'linkage-unavailable', context, reason: 'other' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'play-from-selection-request', requestId: 1, context, offset: 2 })).toEqual({ type: 'play-from-selection-request', requestId: 1, context });
+    expect(parseWebviewMessage({ type: 'context-invalidated', context })).toEqual({ type: 'context-invalidated', context });
+  });
+
+  it('[SPEC-ENV-04] 文档形状完整，首次源码意图必须在快照范围内', () => {
+    expect(parseHostMessage(document)).toEqual(document);
+    for (const key of Object.keys(document)) expect(parseHostMessage({ ...document, [key]: undefined })).toBeUndefined();
+    const initialRequest = { requestId: 1, offset: 8 };
+    expect(parseHostMessage({ ...document, initialRequest })).toEqual({ ...document, initialRequest });
+    for (const offset of [-1, document.abc.length + 1, NaN, 1.5]) expect(parseHostMessage({ ...document, initialRequest: { ...initialRequest, offset } })).toBeUndefined();
+  });
+
+  it('[SPEC-ENV-04] 选曲往返核验请求与实例，嵌套和循环结构立即拒绝', () => {
+    const request = { type: 'select-tune', context, requestId: 3 };
+    expect(parseWebviewMessage(request)).toEqual(request);
+    expect(parseWebviewMessage({ ...request, requestId: undefined })).toBeUndefined();
+    const response = { type: 'selection-snapshot', viewId: 2, requestId: 3, document };
+    expect(parseHostMessage(response)).toEqual(response);
+    expect(parseHostMessage({ ...response, viewId: 4 })).toBeUndefined();
+    expect(parseHostMessage({ ...response, document: response })).toBeUndefined();
+    const cycle: Record<string, unknown> = { ...response };
+    cycle.document = cycle;
+    expect(parseHostMessage(cycle)).toBeUndefined();
+  });
+
+  it('[SPEC-ENV-04] 查阅可清除，显式起播必须带请求编号', () => {
+    for (const offset of [0, 12, null]) expect(parseHostMessage({ type: 'cursor', context, offset })).toEqual({ type: 'cursor', context, offset });
+    for (const offset of [-1, 1.5, undefined]) expect(parseHostMessage({ type: 'cursor', context, offset })).toBeUndefined();
+    const source = { type: 'play-from-cursor', context, requestId: 5, offset: 3 };
+    expect(parseHostMessage({ ...source, uri: 'ignored' })).toEqual(source);
+    expect(parseHostMessage({ ...source, requestId: undefined })).toBeUndefined();
+    const target = { type: 'play-from-selection', context, requestId: 6 };
+    expect(parseHostMessage({ ...target, offset: 5 })).toEqual(target);
+    expect(parseHostMessage({ ...target, targetRequestId: 8 })).toEqual({ ...target, targetRequestId: 8 });
+    for (const requestId of [undefined, -1, 1.5, '2', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(parseWebviewMessage({ type: 'reveal-range', context, requestId, start: 1, end: 2 })).toBeUndefined();
+      expect(parseWebviewMessage({ type: 'play-from-selection-request', context, requestId })).toBeUndefined();
+      if (requestId !== undefined) expect(parseHostMessage({ ...target, targetRequestId: requestId })).toBeUndefined();
+    }
+    expect(parseHostMessage({ type: 'playback', viewId: 2, requestId: 1, action: 'toggle' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'context-invalidated', context, cancelRequests: true })).toEqual({ type: 'context-invalidated', context, cancelRequests: true });
+    expect(parseWebviewMessage({ type: 'context-invalidated', context, cancelRequests: 'true' })).toBeUndefined();
   });
 });

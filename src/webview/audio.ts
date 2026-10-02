@@ -8,6 +8,7 @@ import {
   type SynthOptions,
   type TuneObject,
 } from 'abcjs';
+import { defaultMusicSettings, type MusicSettings } from '../core/tuneSession';
 import {
   SPEED_DEFAULT,
   beatHintFor,
@@ -89,6 +90,8 @@ export class PlaybackController {
   private readonly onTimingsChanged: () => void;
   private readonly synthOptions: SynthOptions;
   private synthInstance: MidiBuffer | undefined;
+  /** 尚未安装的 init/prime 实例也纳入取消清理，不只丢弃 Promise 结果。 */
+  private preparingInstance: MidiBuffer | undefined;
   private tune: TuneObject | undefined;
   private phase: PlaybackPhase = 'idle';
   private statusKey: string | null = null;
@@ -100,6 +103,9 @@ export class PlaybackController {
   private prepared = false;
   /** 任务代次：取消 / 接替 / 换版 / 超时后递增，晚到的准备完成按此丢弃（SPEC-PLAY-01）。 */
   private taskGeneration = 0;
+  /** 曲目与计时器的生命周期独立于可复用音频的准备请求。 */
+  private tuneGeneration = 0;
+  private timerGeneration = 0;
   private prepareTimer: number | undefined;
   /** 自管音频设备：浏览器要求用户交互后才能恢复（SPEC-PLAY-14），统一创建并经 init 传给 abcjs。 */
   private audioContext: AudioContext | undefined;
@@ -112,9 +118,9 @@ export class PlaybackController {
   private gestureUnlock: (() => void) | undefined;
   /** 速度百分比（SPEC-PLAY-04）：默认 100%，主控时序与音频的重建。 */
   private speed = SPEED_DEFAULT;
-  /** 循环开关（SPEC-PLAY-03）：默认关闭；只改播放行为，不启播、不修改 ABC；跨停止与换版保留（会话级）。 */
+  /** 循环开关（SPEC-PLAY-03）：默认关闭；停止保留，切曲 / 换版由会话层核验身份后恢复。 */
   private loopEnabled = false;
-  /** 静音声部索引集合（SPEC-PLAY-06）：跨版本保留，与当前声部清单失配时自然忽略。 */
+  /** 静音声部索引集合（SPEC-PLAY-06）：仅接收会话层按完整声部签名核验后的覆盖。 */
   private readonly mutedVoices = new Set<number>();
   /** 自动和弦伴奏是否静音（SPEC-PLAY-06）：与显式 ABC 伴奏声部相互独立。 */
   private chordsMuted = false;
@@ -167,7 +173,7 @@ export class PlaybackController {
     return this.loopEnabled;
   }
 
-  /** 当前曲目的声部清单与静音状态（SPEC-PLAY-06）：清单随换版重建，静音跨版本保留。 */
+  /** 当前曲目的声部清单与静音状态（SPEC-PLAY-06）：清单随曲目重建，静音仅按已核验的逐曲设置恢复。 */
   getVoices(): Array<VoiceEntry & { muted: boolean }> {
     return this.voiceEntries.map((entry) => ({ ...entry, muted: this.mutedVoices.has(entry.index) }));
   }
@@ -208,9 +214,9 @@ export class PlaybackController {
     }
     this.speed = next;
     const tune = this.tune;
-    if (tune !== undefined) {
-      // 先按新速度重建时序（事件毫秒数随速度缩放；main 的映射随新时序刷新），再重建音频
-      const fraction = this.rebuild?.fraction ?? this.currentFraction();
+    if (tune !== undefined && this.synthInstance === undefined && this.rebuild === undefined) {
+      // 未准备音频时只重建时序；已有音频由 startRebuild 统一冻结并重建一次。
+      const fraction = this.currentFraction();
       this.buildTimer(tune, fraction);
       this.onTimingsChanged();
     }
@@ -255,14 +261,30 @@ export class PlaybackController {
   }
 
   /** 采用渲染后的曲目（应用时机的换版，SPEC-STATE-07）；尚未渲染出曲目（undefined）时清空，不残留已失效版本。 */
-  setTune(tune: TuneObject | undefined): void {
-    if (tune === this.tune) {
-      return;
-    }
-    // 换版归零：取消进行中的准备（旧任务完成不得发声），丢弃旧合成器与位置
+  setTune(tune: TuneObject | undefined, settings?: MusicSettings): void {
+    if (tune === this.tune && settings === undefined) return;
     this.invalidateTask();
+    this.tuneGeneration += 1;
+    this.timerGeneration += 1;
+    const old = this.synthInstance;
+    this.synthInstance = undefined; // 先撤归属，stop 同步或异步发出的 ended 都不能影响新曲
+    this.phase = 'idle';
+    this.pendingEndedIgnores = 0;
+    try { old?.stop(); } catch (error) { console.error('ABC Desk: stop on tune change failed', error); }
+    const next = settings ?? defaultMusicSettings();
+    this.speed = clampSpeed(next.speed);
+    this.loopEnabled = next.loop;
+    this.chordsMuted = next.chordsMuted;
+    this.mutedVoices.clear();
+    for (const index of next.mutedVoices) {
+      if (Number.isSafeInteger(index) && index >= 0) this.mutedVoices.add(index);
+    }
     this.adoptTune(tune);
     this.onChange();
+  }
+
+  getSettings(): MusicSettings {
+    return { speed: this.speed, loop: this.loopEnabled, chordsMuted: this.chordsMuted, mutedVoices: [...this.mutedVoices] };
   }
 
   /**
@@ -326,7 +348,7 @@ export class PlaybackController {
         this.pauseInternal();
         break;
       case 'paused':
-        this.startSound();
+        this.startFromIdle();
         break;
       case 'idle':
         this.startFromIdle();
@@ -351,6 +373,7 @@ export class PlaybackController {
     this.rebuild = undefined;
     this.pendingStartFraction = undefined;
     const instance = this.synthInstance;
+    if (this.phase === 'playing' && instance?.getIsRunning()) this.pendingEndedIgnores += 1;
     this.phase = 'idle'; // 先改相位：随后触发的 ended 事件不算自然结束
     if (instance !== undefined) {
       try {
@@ -359,7 +382,10 @@ export class PlaybackController {
         console.error('ABC Desk: stop failed', error);
       }
     }
-    this.timer?.stop(); // 演奏时序归零，下次播放从头回调（SPEC-PLAY-03）
+    if (this.tune !== undefined) {
+      this.buildTimer(this.tune, 0);
+      this.onTimingsChanged();
+    } else this.timer?.stop();
     this.statusKey = null;
     this.onTimeline(null); // 停止清除播放高亮（SPEC-PLAY-11）
     this.onChange();
@@ -368,6 +394,8 @@ export class PlaybackController {
   /** webview 关闭时立即停音（面板销毁前的保险；保留上下文时隐藏不会触发此处）。 */
   dispose(): void {
     this.removeGestureUnlock();
+    this.tuneGeneration += 1;
+    this.timerGeneration += 1;
     this.invalidateTask();
     this.rebuild = undefined;
     const instance = this.synthInstance;
@@ -494,6 +522,7 @@ export class PlaybackController {
     if (instance === undefined) {
       return;
     }
+    if (instance.getIsRunning()) this.pendingEndedIgnores += 1;
     this.phase = 'paused'; // 先改相位：pause() 内部停源触发的 ended 不算自然结束
     instance.pause();
     this.timer?.pause();
@@ -552,12 +581,13 @@ export class PlaybackController {
 
   /** 创建当前曲目的演奏时序（SPEC-PLAY-11 / 12）：速度基准与音频同源，事件回调交给 main 更新播放高亮。 */
   private createTimer(tune: TuneObject): TimingCallbacks | undefined {
+    const generation = ++this.timerGeneration;
     try {
       return new TimingCallbacks(tune, {
         // 速度调整经 qpm 传入（SPEC-PLAY-04）：事件毫秒数随速度缩放，与音频的每小节毫秒数一致
         qpm: this.warpedQpm(tune),
         eventCallback: (event) => {
-          this.onTimeline(event);
+          if (generation === this.timerGeneration && this.tune === tune) this.onTimeline(event);
           // 返回 undefined：结束时允许时序自停（返回 "continue" 才会续播，SPEC-PLAY-03 非循环自然结束）
           return undefined;
         },
@@ -571,6 +601,7 @@ export class PlaybackController {
 
   /** 以当前速度重建演奏时序（SPEC-PLAY-04）：替换旧时序并记录目标比例，不启动（由起播路径启动）。 */
   private buildTimer(tune: TuneObject, fraction: number): void {
+    this.timerGeneration += 1;
     this.timer?.stop();
     this.timer = this.createTimer(tune);
     this.timer?.setProgress(fraction, 'percent');
@@ -597,9 +628,8 @@ export class PlaybackController {
     }
     if (this.phase === 'preparing') {
       // 准备中：取消旧准备，按新参数重新准备，保留这次仍有效的起播目标
-      const fraction = this.pendingStartFraction;
-      this.cancelPrepare();
-      this.pendingStartFraction = fraction;
+      this.invalidateTask();
+      // 内部参数重启不报告空闲，避免 onChange 重入换版。
       this.beginPrepare();
       return;
     }
@@ -613,26 +643,23 @@ export class PlaybackController {
   private startRebuild(resume: boolean): void {
     const instance = this.synthInstance;
     const fraction = this.rebuild?.fraction ?? this.currentFraction();
+    this.synthInstance = undefined;
+    this.prepared = false;
+    this.pendingEndedIgnores = 0;
     if (instance !== undefined) {
-      if (this.phase === 'playing' && instance.getIsRunning()) {
-        // 停源触发一次 ended：计数排除，不算自然结束（僵尸运行态不再派发事件，不计数）
-        this.pendingEndedIgnores += 1;
-      }
       try {
-        instance.stop();
+        instance.stop(); // 已撤销归属，旧 ended 不进入当前计数。
       } catch (error) {
         console.error('ABC Desk: stop for rebuild failed', error);
       }
-      this.synthInstance = undefined;
-      this.prepared = false;
+    }
+    if (this.tune !== undefined) {
+      this.buildTimer(this.tune, fraction);
+      this.onTimingsChanged();
     }
     // 作废旧重建（若有）：晚到的完成按代次丢弃、不发声
-    this.currentTask = undefined;
-    if (this.prepareTimer !== undefined) {
-      window.clearTimeout(this.prepareTimer);
-      this.prepareTimer = undefined;
-    }
-    const generation = ++this.taskGeneration;
+    this.invalidateTask();
+    const generation = this.taskGeneration;
     if (resume) {
       this.statusKey = 'applying-speed'; // 播放中重建：状态区提示短暂缓冲
     }
@@ -660,8 +687,9 @@ export class PlaybackController {
     const audioContext = this.ensureAudioContext();
     this.armPrepareTimeout(generation);
     const instance = new synth.CreateSynth();
+    this.preparingInstance = instance;
     void this.initSynth(tune, instance, audioContext)
-      .then(() => instance.prime())
+      .then(() => generation === this.taskGeneration ? instance.prime() : undefined)
       .then((result) => {
         if (generation !== this.taskGeneration || this.rebuild?.generation !== generation) {
           // 已取消 / 被接替 / 已换版 / 已超时：晚到的完成不得发声（备用缓冲由 abcjs 内部缓存复用）
@@ -672,6 +700,10 @@ export class PlaybackController {
           }
           return;
         }
+        if (result === undefined) return;
+        this.preparingInstance = undefined;
+        this.currentTask = undefined;
+        window.clearTimeout(this.prepareTimer);
         this.prepareTimer = undefined;
         if (result.status === 'empty') {
           // 没有可发声的音符：保持空闲，不进入播放（SPEC-STATE-05）
@@ -689,10 +721,10 @@ export class PlaybackController {
           return;
         }
         // 重建失败：保留最后可靠位置（下次播放从该处重试），仅状态区提示（SPEC-STATE-04）
-        this.prepareTimer = undefined;
+        this.invalidateTask();
+        this.pendingStartFraction = this.rebuild.fraction;
         this.rebuild = undefined;
-        this.phase = 'idle';
-        this.pendingStartFraction = fraction;
+        this.phase = 'paused';
         this.statusKey = 'audio-failed';
         console.error('ABC Desk: audio rebuild failed', error);
         this.onChange();
@@ -712,6 +744,7 @@ export class PlaybackController {
     }
     this.rebuild = undefined;
     this.synthInstance = instance;
+    this.pendingEndedIgnores = 0;
     this.prepared = true;
     this.pendingStartFraction = undefined; // 位置由实例与重建状态承载，清掉更早的残留起点
     instance.seek(rebuild.fraction, 'percent');
@@ -734,9 +767,12 @@ export class PlaybackController {
     instance: MidiBuffer,
     audioContext: AudioContext | undefined,
   ): Promise<unknown> {
+    const generation = this.tuneGeneration;
     const options: SynthOptions = {
       ...this.synthOptions,
-      onEnded: () => this.handleEnded(),
+      onEnded: () => {
+        if (generation === this.tuneGeneration && instance === this.synthInstance) this.handleEnded();
+      },
     };
     if (this.mutedVoices.size > 0) {
       // 声部静音（SPEC-PLAY-06）：只把对应轨音量置 0，不改音符、不改谱面与键盘提示
@@ -786,6 +822,9 @@ export class PlaybackController {
   /** 递增任务代次并清理任务标记与计时器：旧准备的完成不再产生任何影响。 */
   private invalidateTask(): void {
     this.taskGeneration += 1;
+    const pending = this.preparingInstance;
+    this.preparingInstance = undefined;
+    try { pending?.stop(); } catch (error) { console.error('ABC Desk: pending audio cleanup failed', error); }
     this.currentTask = undefined;
     if (this.prepareTimer !== undefined) {
       window.clearTimeout(this.prepareTimer);
@@ -817,6 +856,7 @@ export class PlaybackController {
       if (rebuilding) {
         // 重建超时（SPEC-PERF-08）：进暂停并保留最后可靠位置；挂起的事件由相位守卫兜底
         const fraction = this.rebuild?.fraction ?? 0;
+        this.invalidateTask();
         this.rebuild = undefined;
         this.pendingStartFraction = fraction;
         this.timer?.setProgress(fraction, 'percent');
@@ -878,8 +918,8 @@ export class PlaybackController {
       this.gestureRecoveryTimer = window.setTimeout(() => {
         this.gestureRecoveryTimer = undefined;
         if (this.currentTask === task && this.phase === 'preparing') {
-          this.cancelPrepare();
-          this.startFromIdle();
+          this.invalidateTask();
+          this.beginPrepare();
         }
       }, GESTURE_RECOVERY_MS);
     };
@@ -926,16 +966,23 @@ export class PlaybackController {
     this.armPrepareTimeout(generation);
 
     const instance = new synth.CreateSynth();
+    this.preparingInstance = instance;
     void this.initSynth(tune, instance, audioContext)
       .then(() => {
+        if (generation !== this.taskGeneration) return undefined;
         task.primeStarted = true; // 进入缓冲生成：此后可能等待音频恢复（SPEC-PLAY-14）
         return instance.prime();
       })
       .then((result) => {
         if (generation !== this.taskGeneration) {
-          // 已取消 / 已接替 / 已换版 / 已超时的旧任务：不得发声（备用缓冲由 abcjs 内部缓存复用）
+          // 已取消 / 已接替 / 已换版 / 已超时的旧任务：停止实例且不得发声。
+          try { instance.stop(); } catch (error) { console.error('ABC Desk: stale preparation cleanup failed', error); }
           return;
         }
+        if (result === undefined) return;
+        this.preparingInstance = undefined;
+        this.currentTask = undefined;
+        window.clearTimeout(this.prepareTimer);
         this.prepareTimer = undefined;
         if (result.status === 'empty') {
           // 没有可发声的音符：保持空闲，不进入播放（SPEC-STATE-05）
@@ -955,7 +1002,7 @@ export class PlaybackController {
           return;
         }
         // 音频准备失败：保留谱面，仅状态区提示；用户再次播放即发起新的重试请求（SPEC-STATE-04）
-        this.prepareTimer = undefined;
+        this.invalidateTask();
         this.phase = 'idle';
         this.statusKey = 'audio-failed';
         this.synthInstance = undefined;

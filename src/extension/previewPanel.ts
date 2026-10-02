@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import {
   parseWebviewMessage,
+  sameContext,
+  type PreviewContext,
   type CursorMessage,
   type DocumentMessage,
   type LinkageUnavailableReason,
@@ -34,7 +36,7 @@ import {
  */
 
 /** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）。 */
-type PendingRequest = { kind: 'toggle' } | { kind: 'play-from-cursor'; offset: number };
+type PendingRequest = { kind: 'toggle' } | { kind: 'play-from-cursor'; offset: number; version: number };
 
 /** 面板条目：面板本身与宿主侧需要核验的最小状态。 */
 interface PanelEntry {
@@ -59,6 +61,15 @@ interface PanelEntry {
   pendingChange: vscode.TextDocument | undefined;
   /** 当前目标音符的源码区间（SPEC-PLAY-11 轮廓标记 / SPEC-CMD-12 落点依据），由 webview 目标回传驱动；目标清除 / 内容变化时清空，不套用旧偏移。 */
   targetRanges: SourceHighlightRange[];
+  viewId: number;
+  revision: number;
+  appliedRevision: number;
+  requestId: number;
+  lastRevealRequest: number;
+  lastSelectionRequest: number;
+  lastTargetRequest: number;
+  context: PreviewContext | undefined;
+  phase: WebviewPlaybackStateMessage['state'];
 }
 
 /** 文档更新推送防抖（毫秒）：连续输入只在稳定后推送一次最新版本。 */
@@ -66,6 +77,7 @@ const UPDATE_DEBOUNCE_MS = 300;
 
 export class PreviewPanelManager implements vscode.Disposable {
   private readonly panels = new Map<string, PanelEntry>();
+  private viewSequence = 0;
   private readonly disposables: vscode.Disposable[] = [];
   /** 各文档待推送的防抖计时器（按 URI 键控）。 */
   private readonly updateTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -131,25 +143,30 @@ export class PreviewPanelManager implements vscode.Disposable {
    */
   requestPlayFromCursor(document: vscode.TextDocument, offset: number): void {
     const entry = this.panels.get(document.uri.toString());
+    const request: PendingRequest = { kind: 'play-from-cursor', offset, version: document.version };
     if (entry === undefined) {
-      this.createPanel(document, { kind: 'play-from-cursor', offset });
+      this.createPanel(document, request);
       return;
     }
-    if (!entry.panel.visible) {
-      entry.panel.reveal(undefined, true);
-    }
+    if (!entry.panel.visible) entry.panel.reveal(undefined, true);
     this.flushDocumentUpdate(entry);
-    if (!entry.renderedOnce) {
-      entry.pendingRequest = { kind: 'play-from-cursor', offset };
+    if (entry.version !== document.version) this.pushDocument(entry, document);
+    if ((entry.phase === 'playing' || entry.phase === 'preparing') && entry.appliedRevision !== entry.revision) {
+      entry.pendingRequest = undefined;
+      this.showLinkageUnavailable('update-pending');
+      return;
+    }
+    if (!entry.renderedOnce || entry.appliedRevision !== entry.revision || entry.context === undefined) {
+      entry.pendingRequest = request;
       return;
     }
     entry.pendingRequest = undefined;
-    const message: PlayFromCursorMessage = { type: 'play-from-cursor', offset };
+    const message: PlayFromCursorMessage = { type: 'play-from-cursor', context: entry.context, requestId: ++entry.requestId, offset };
     void entry.panel.webview.postMessage(message);
   }
 
   /** "从所选音符播放"命令入口（SPEC-CMD-08 / PLAY-12）：取预览内的当前目标音符；预览不存在时说明先打开预览。 */
-  requestPlayFromSelection(document: vscode.TextDocument): void {
+  requestPlayFromSelection(document: vscode.TextDocument, targetRequestId?: number): void {
     const entry = this.panels.get(document.uri.toString());
     if (entry === undefined) {
       void vscode.window.showInformationMessage(
@@ -158,7 +175,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       return;
     }
     this.flushDocumentUpdate(entry);
-    void entry.panel.webview.postMessage({ type: 'play-from-selection' });
+    if (entry.suspend || entry.context === undefined) {
+      this.showLinkageUnavailable(entry.appliedRevision !== entry.revision ? 'update-pending' : 'no-selection');
+      return;
+    }
+    void entry.panel.webview.postMessage({ type: 'play-from-selection', context: entry.context, requestId: ++entry.requestId, ...(targetRequestId === undefined ? {} : { targetRequestId }) });
   }
 
   /**
@@ -172,14 +193,15 @@ export class PreviewPanelManager implements vscode.Disposable {
       return;
     }
     const entry = this.panels.get(document.uri.toString());
-    const range = entry?.targetRanges[0];
+    const range = entry?.suspend === false ? entry.targetRanges[0] : undefined;
+    const context = entry?.context;
     try {
       const editor = await vscode.window.showTextDocument(document, {
         viewColumn: vscode.ViewColumn.One,
         preview: false,
         preserveFocus: false,
       });
-      if (range === undefined) {
+      if (range === undefined || entry === undefined || context === undefined || this.panels.get(entry.uri) !== entry || entry.suspend || !sameContext(entry.context, context) || entry.targetRanges[0] !== range || editor.document.version !== context.version) {
         return;
       }
       const selection = new vscode.Selection(
@@ -270,7 +292,8 @@ export class PreviewPanelManager implements vscode.Disposable {
 
   /** 预览是否落后于最新文档（SPEC-EXP-01）：文档已变化、新版本尚未渲染确认。 */
   isPreviewStale(uri: string): boolean {
-    return this.panels.get(uri)?.suspend === true;
+    const entry = this.panels.get(uri);
+    return entry !== undefined && (entry.pendingChange !== undefined || entry.appliedRevision !== entry.revision);
   }
 
   /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）；连续变化防抖，只推送稳定后的最新版本。 */
@@ -316,10 +339,10 @@ export class PreviewPanelManager implements vscode.Disposable {
   /** 推送查阅标记位置（SPEC-PLAY-11）：停用窗口内只记录、不应用，渲染完成后补发最新位置。 */
   private sendCursor(entry: PanelEntry, offset: number | null): void {
     entry.lastCursorOffset = offset ?? undefined;
-    if (entry.suspend || !entry.renderedOnce) {
+    if (entry.suspend || !entry.renderedOnce || entry.context === undefined) {
       return;
     }
-    const message: CursorMessage = { type: 'cursor', offset };
+    const message: CursorMessage = { type: 'cursor', context: entry.context, offset };
     void entry.panel.webview.postMessage(message);
   }
 
@@ -366,6 +389,15 @@ export class PreviewPanelManager implements vscode.Disposable {
       lastCursorOffset: undefined,
       pendingChange: undefined,
       targetRanges: [],
+      viewId: 0,
+      revision: 0,
+      appliedRevision: -1,
+      requestId: 0,
+      lastRevealRequest: -1,
+      lastSelectionRequest: -1,
+      lastTargetRequest: -1,
+      context: undefined,
+      phase: 'idle',
     };
     this.panels.set(entry.uri, entry);
     panel.webview.html = this.renderHtml(panel.webview);
@@ -406,11 +438,50 @@ export class PreviewPanelManager implements vscode.Disposable {
     panel.webview.onDidReceiveMessage(
       (message: unknown) => {
         const parsed = parseWebviewMessage(message);
-        if (parsed === undefined) {
+        if (parsed === undefined || this.panels.get(entry.uri) !== entry) return;
+        if (parsed.type === 'ready') {
+          entry.viewId = ++this.viewSequence;
+          entry.context = undefined;
+          entry.lastRevealRequest = -1;
+          entry.lastSelectionRequest = -1;
+          entry.lastTargetRequest = -1;
+          entry.renderedOnce = false;
+          entry.appliedRevision = -1;
+          entry.phase = 'idle';
+          entry.targetRanges = [];
+          this.clearSourceHighlight(entry);
+          this.syncLinkedDecorations();
+          entry.suspend = true;
+          this.pushDocument(entry, entry.document);
           return;
         }
-        if (parsed.type === 'ready') {
-          this.pushDocument(entry, entry.document);
+        if (parsed.type === 'reveal-source') {
+          if (parsed.viewId === entry.viewId) this.revealSource(entry);
+          return;
+        }
+        const context = parsed.context;
+        if (context.viewId !== entry.viewId) return;
+        if (parsed.type === 'context-invalidated') {
+          const known = (context.revision === entry.revision && context.version === entry.version) ||
+            (context.revision === entry.context?.revision && context.version === entry.context.version);
+          if (!known || context.selection <= (entry.context?.selection ?? -1)) return;
+          entry.context = context;
+          if (parsed.cancelRequests) entry.pendingRequest = undefined;
+          entry.suspend = true;
+          entry.targetRanges = [];
+          this.clearSourceHighlight(entry);
+          this.syncLinkedDecorations();
+          return;
+        }
+        if (!sameContext(entry.context, context)) return;
+        if (parsed.type === 'select-tune') {
+          if (parsed.requestId <= entry.lastSelectionRequest) return;
+          entry.lastSelectionRequest = parsed.requestId;
+          entry.pendingRequest = undefined;
+          this.flushDocumentUpdate(entry);
+          const current = vscode.workspace.textDocuments.find((document) => document.uri.toString() === entry.uri) ?? entry.document;
+          const document = this.documentMessage(entry, current);
+          void entry.panel.webview.postMessage({ type: 'selection-snapshot', viewId: entry.viewId, requestId: parsed.requestId, document });
           return;
         }
         if (parsed.type === 'rendered') {
@@ -419,18 +490,22 @@ export class PreviewPanelManager implements vscode.Disposable {
         }
         if (parsed.type === 'play-from-selection-request') {
           // 预览控制区"从此处播放"（SPEC-PLAY-12）：与命令共用路径（先刷新待更新文档再映射）
-          this.requestPlayFromSelection(entry.document);
+          if (parsed.requestId <= entry.lastTargetRequest) return;
+          entry.lastTargetRequest = parsed.requestId;
+          this.requestPlayFromSelection(entry.document, parsed.requestId);
           return;
         }
-        if (parsed.type === 'reveal-source') {
-          this.revealSource(entry);
-          return;
-        }
+        if ((parsed.type === 'reveal-range' || 'ranges' in parsed) &&
+            (context.revision !== entry.revision || context.version !== entry.document.version)) return;
+        if ('ranges' in parsed && parsed.ranges.some((range) => range.end > entry.document.getText().length)) return;
         if (parsed.type === 'reveal-range') {
+          if (parsed.end > entry.document.getText().length) return;
           if (entry.suspend) {
             // 停用窗口：忽略旧谱面→旧源码的定位（SPEC-PLAY-11）
             return;
           }
+          if (parsed.requestId <= entry.lastRevealRequest) return;
+          entry.lastRevealRequest = parsed.requestId;
           this.revealRange(entry, parsed);
           return;
         }
@@ -467,35 +542,27 @@ export class PreviewPanelManager implements vscode.Disposable {
    * 仍有效的待起播请求在首次渲染成功后执行（SPEC-CMD-07 / 09、PLAY-11）。
    */
   private handleRendered(entry: PanelEntry, message: WebviewRenderedMessage): void {
-    if (message.version !== entry.version) {
-      return;
-    }
+    if (message.context.version !== entry.version || message.context.revision !== entry.revision) return;
     entry.renderedOnce = true;
-    // 新版本已在预览侧落地：解除联动停用（SPEC-PLAY-11）
-    entry.suspend = false;
-    if (entry.lastCursorOffset !== undefined) {
-      const cursor: CursorMessage = { type: 'cursor', offset: entry.lastCursorOffset };
-      void entry.panel.webview.postMessage(cursor);
-    }
+    entry.appliedRevision = entry.revision;
+    entry.suspend = !message.linkable || entry.pendingChange !== undefined || entry.document.version !== message.context.version;
+    if (entry.lastCursorOffset !== undefined) this.sendCursor(entry, entry.lastCursorOffset);
     const request = entry.pendingRequest;
-    if (request === undefined) {
-      return;
-    }
     entry.pendingRequest = undefined;
-    // 渲染失败时没有可起播的曲目，丢弃该请求；只执行仍有效且成功的请求（SPEC-CMD-07）
-    if (!message.ok || !entry.panel.visible) {
-      return;
-    }
+    if (request === undefined || !entry.panel.visible) return;
     if (request.kind === 'toggle') {
-      this.postPlayback(entry, 'toggle');
+      if (message.ok && message.linkable) this.postPlayback(entry, 'toggle');
       return;
     }
-    const playFrom: PlayFromCursorMessage = { type: 'play-from-cursor', offset: request.offset };
+    // 源码目标可能是另一首，不能被当前曲目渲染失败阻断。
+    if (request.version !== entry.version) return;
+    const playFrom: PlayFromCursorMessage = { type: 'play-from-cursor', context: message.context, requestId: ++entry.requestId, offset: request.offset };
     void entry.panel.webview.postMessage(playFrom);
   }
 
   /** 同一窗口内只允许一处预览发声：任一面板起播时暂停其他面板（SPEC-PLAY-01）。 */
   private handlePlaybackState(entry: PanelEntry, state: WebviewPlaybackStateMessage['state']): void {
+    entry.phase = state;
     if (state !== 'playing') {
       return;
     }
@@ -507,8 +574,11 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   private postPlayback(entry: PanelEntry, action: PlaybackMessage['action']): void {
-    const message: PlaybackMessage = { type: 'playback', action };
-    void entry.panel.webview.postMessage(message);
+    if (action !== 'toggle') entry.pendingRequest = undefined;
+    const base = { type: 'playback' as const, viewId: entry.viewId, requestId: ++entry.requestId };
+    if (action === 'toggle') {
+      if (entry.context !== undefined) void entry.panel.webview.postMessage({ ...base, action, context: entry.context } satisfies PlaybackMessage);
+    } else void entry.panel.webview.postMessage({ ...base, action } satisfies PlaybackMessage);
   }
 
   /**
@@ -547,8 +617,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       viewColumn: vscode.ViewColumn.One,
       preview: false,
       preserveFocus: true, // 点击谱面不转移焦点（SPEC-PLAY-11）
-      selection,
-    });
+    }).then((opened) => {
+      if (this.panels.get(entry.uri) !== entry || entry.suspend || entry.lastRevealRequest !== message.requestId || !sameContext(entry.context, message.context) || opened.document.version !== message.context.version) return;
+      opened.selection = selection;
+      opened.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    }, (error: unknown) => this.reportSourceUnavailable(error));
   }
 
   /** 联动不可用的原因说明（SPEC-PLAY-11 / 12）：不静默失败，不悄悄从头播放。 */
@@ -597,19 +670,29 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  private pushDocument(entry: PanelEntry, document: vscode.TextDocument): void {
+  private documentMessage(entry: PanelEntry, document: vscode.TextDocument): DocumentMessage {
+    const abc = document.getText();
+    if (entry.version !== document.version || entry.lastPushedAbc !== abc) {
+      entry.revision += 1;
+      entry.suspend = true;
+      entry.targetRanges = [];
+      this.clearSourceHighlight(entry);
+      this.syncLinkedDecorations();
+    }
     entry.panel.title = panelTitle(document);
     entry.document = document;
     entry.version = document.version;
-    const message: DocumentMessage = {
-      type: 'document',
-      uri: document.uri.toString(),
-      fileName: fileNameOf(document),
-      abc: document.getText(),
-      isUntitled: document.isUntitled,
-      version: document.version,
-    };
-    entry.lastPushedAbc = message.abc;
+    entry.lastPushedAbc = abc;
+    return { type: 'document', uri: entry.uri, fileName: fileNameOf(document), abc, isUntitled: document.isUntitled, version: document.version, viewId: entry.viewId, revision: entry.revision };
+  }
+
+  private pushDocument(entry: PanelEntry, document: vscode.TextDocument): void {
+    const message = this.documentMessage(entry, document);
+    const request = entry.pendingRequest;
+    if (!entry.renderedOnce && request?.kind === 'play-from-cursor') {
+      entry.pendingRequest = undefined;
+      if (request.version === document.version) message.initialRequest = { requestId: ++entry.requestId, offset: request.offset };
+    }
     void entry.panel.webview.postMessage(message);
   }
 
@@ -667,6 +750,30 @@ export class PreviewPanelManager implements vscode.Disposable {
       background: var(--vscode-editor-background);
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
+    /* SPEC-DOC-01：曲目独占一行；长列表内部滚动，不挤压原控制分组。 */
+    #tunes { position: relative; padding: 6px 12px 0; }
+    #tunes[hidden], #tune-list[hidden] { display: none; }
+    #tunes > button {
+      font: inherit; width: 100%; text-align: left; padding: 5px 8px;
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+      color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background);
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 2px; cursor: pointer;
+    }
+    #tunes > button:focus-visible, #tune-list:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    #tune-list {
+      position: absolute; top: 100%; left: 12px; right: 12px; z-index: 5;
+      max-height: min(320px, 55vh); overflow-y: auto; overscroll-behavior: contain;
+      background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-focusBorder));
+      box-shadow: 0 2px 6px var(--vscode-widget-shadow, rgba(0,0,0,.3));
+    }
+    #tune-list [role='option'] { padding: 6px 8px; overflow-wrap: anywhere; cursor: pointer; }
+    #tune-list [aria-selected='true'] { font-weight: bold; }
+    #tune-list .candidate { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; background: var(--vscode-list-focusBackground); }
+    #tune-list [role='option']:hover { background: var(--vscode-list-hoverBackground); }
+    #tune-list [aria-disabled='true'] { color: var(--vscode-disabledForeground); cursor: default; }
+    #progress[aria-disabled='true'] { opacity: .5; cursor: default; }
     /* 控制区（SPEC-PLAY-13）：列间距走分组 margin-right（图标节奏需要精确值），仅保留行距 8px */
     #controls {
       display: flex;
@@ -1015,6 +1122,7 @@ export class PreviewPanelManager implements vscode.Disposable {
 </head>
 <body>
   <div id="topbar">
+    <div id="tunes" hidden></div>
     <div id="controls">
       <!-- 速度组（SPEC-PLAY-13）：置于最左——先调速、再播放的练习流 -->
       <span class="abcdesk-control-group" id="speed-group">
@@ -1058,9 +1166,10 @@ export class PreviewPanelManager implements vscode.Disposable {
   <div id="score-region">
     <div id="content-status" role="status" aria-live="polite" hidden>
       <span id="content-status-text"></span>
+      <button id="confirm-tune" type="button" hidden></button>
       <button id="reveal-source" type="button" hidden></button>
     </div>
-    <div id="score"></div>
+    <div id="score" tabindex="-1"></div>
   </div>
   <section id="keyboard" hidden>
     <div id="keyboard-meta">
@@ -1117,6 +1226,10 @@ function panelTitle(document: vscode.TextDocument): string {
 /** 联动不可用原因的用户可见文案（SPEC-PLAY-11 / 12）。 */
 function linkageUnavailableText(reason: LinkageUnavailableReason): string {
   switch (reason) {
+    case 'choose-tune':
+      return vscode.l10n.t('Please select a tune again.');
+    case 'structure-unreliable':
+      return vscode.l10n.t('Some tune boundaries could not be identified. Check the ABC source.');
     case 'no-mapping':
       return vscode.l10n.t('No note matches the current position.');
     case 'no-selection':

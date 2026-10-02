@@ -7,7 +7,7 @@
  * 测试标题额外引用条目以便双向校验。
  */
 
-import type { AudioTracks, SynthOptions } from 'abcjs';
+import type { AudioTracks, SynthOptions, TuneObject } from 'abcjs';
 
 /** 速度百分比范围、步进与默认值（SPEC-PLAY-04：默认 100%、范围 25%～200%）。 */
 export const SPEED_MIN = 25;
@@ -93,6 +93,69 @@ export function collectVoices(tune: VoiceSource): VoiceEntry[] {
     }
   }
   return names.map((name, index) => ({ index, name }));
+}
+
+/**
+ * SPEC-SET-04：用音符在解析输入中的位置核验 V: 归属，不将显示名或轨序号当作标识。
+ * abcjs 不公开原 V: id；不完整、矛盾或无法核验的轨一律返回未知。
+ */
+export function voiceSignature(tune: TuneObject, abc: string): string | null {
+  // 先掩蔽文本块和非声部字段，再过滤注释、字符串、装饰；始终保留 UTF-16 长度和行界。
+  let block: string | undefined;
+  const source = abc.split('\n').map((line) => {
+    const begin = /^%%begin(\w+)/i.exec(line);
+    const end = /^%%end(\w+)/i.exec(line);
+    const blocked = block !== undefined || begin !== null;
+    if (begin !== null) block = begin[1].toLowerCase();
+    if (end !== null && end[1].toLowerCase() === block) block = undefined;
+    return blocked || /^(?!V:|K:)[A-Za-z+]:/.test(line) ? ' '.repeat(line.length) : line;
+  }).join('\n');
+  let masked = '';
+  let quote = '';
+  let comment = false;
+  for (let index = 0; index < abc.length; index += 1) {
+    const char = source[index];
+    if (char === '\n') { comment = false; quote = ''; masked += char; continue; }
+    if (comment) { masked += ' '; continue; }
+    if (quote !== '') {
+      if (char === quote && abc[index - 1] !== '\\') quote = '';
+      masked += ' ';
+      continue;
+    }
+    if (char === '%' && abc[index - 1] !== '\\') { comment = true; masked += ' '; continue; }
+    if (char === '"' || char === '!' || char === '+') { quote = char; masked += ' '; continue; }
+    masked += char;
+  }
+  const headerEnd = /^K:.*$/m.exec(masked);
+  const bodyStart = headerEnd === null ? 0 : headerEnd.index + headerEnd[0].length;
+  const declarations = [...masked.matchAll(/(?:^|\n)V:[ \t]*([^\s[\]%]+)|\[V:[ \t]*([^\s\]]+)/g)];
+  const declared = new Set(declarations.map((match) => match[1] ?? match[2]));
+  const switches = declarations.filter((match) => match.index >= bodyStart || match[2] !== undefined);
+  const entries = collectVoices(tune);
+  const ids: Array<string | undefined> = [];
+  for (const line of tune.lines) {
+    let track = 0;
+    for (const staff of line.staff ?? []) {
+      if ((staff.clef as { type?: string } | undefined)?.type === 'TAB') continue;
+      for (const voice of staff.voices ?? []) {
+        for (const note of voice ?? []) {
+          if (note.el_type !== 'note' || note.startChar === undefined || note.startChar < 0) continue;
+          let id = declared.size === 0 ? '@implicit' : declared.size === 1 ? [...declared][0] : undefined;
+          for (const change of switches) {
+            if (change.index > note.startChar) break;
+            id = change[1] ?? change[2];
+          }
+          if (id === undefined || (ids[track] !== undefined && ids[track] !== id)) return null;
+          ids[track] = id;
+        }
+        track += 1;
+      }
+    }
+  }
+  if (entries.length === 0 || entries.some((entry) => ids[entry.index] === undefined)) return null;
+  if (new Set(ids).size !== entries.length || [...declared].some((id) => !ids.includes(id))) return null;
+  // null 是内部默认声部标识，与任何显式 V: 字符串均不冲突。
+  return JSON.stringify(entries.map((entry) => [declared.size === 0 ? null : ids[entry.index], entry.name]));
 }
 
 /**

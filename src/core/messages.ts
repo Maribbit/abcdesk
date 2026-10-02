@@ -1,145 +1,28 @@
-/**
- * 消息桥消息形状校验（SPEC-ENV-04）。
- *
- * 纯逻辑模块，双向校验：宿主侧不信任 webview 消息（parseWebviewMessage），
- * webview 侧同样只接受已登记的宿主消息形状（parseHostMessage）；
- * 未知类型、缺类型或非对象一律拒绝，额外字段全部丢弃。
- * 数值范围在此校验；"当前文档版本"的比对由持有版本的调用方完成。
- */
-
-/** webview 就绪握手；宿主收到后推送当前文档内容。 */
-export interface WebviewReadyMessage {
-  type: 'ready';
-}
-
-/** 渲染结果：version 为该次渲染对应的文档版本（SPEC-CMD-07 据此执行仍有效的待起播请求）。 */
-export interface WebviewRenderedMessage {
-  type: 'rendered';
+/** SPEC-ENV-04 / STATE-02：双向白名单与上下文校验，不接受文件操作路径。 */
+export interface PreviewContext {
+  viewId: number;
+  revision: number;
   version: number;
-  ok: boolean;
+  selection: number;
 }
+export interface SourceHighlightRange { start: number; end: number }
+export type LinkageUnavailableReason = 'no-mapping' | 'no-selection' | 'update-pending' | 'stale-score' | 'choose-tune' | 'structure-unreliable';
+export interface WebviewReadyMessage { type: 'ready' }
+export interface WebviewRenderedMessage { type: 'rendered'; context: PreviewContext; ok: boolean; linkable: boolean }
+export interface WebviewPlaybackStateMessage { type: 'playback-state'; context: PreviewContext; state: 'idle' | 'preparing' | 'playing' | 'paused' }
+export interface WebviewRevealSourceMessage { type: 'reveal-source'; viewId: number }
+export interface WebviewRevealRangeMessage { type: 'reveal-range'; context: PreviewContext; requestId: number; start: number; end: number }
+export interface WebviewLinkageUnavailableMessage { type: 'linkage-unavailable'; context: PreviewContext; reason: LinkageUnavailableReason }
+export interface WebviewSourceHighlightMessage { type: 'source-highlight'; context: PreviewContext; ranges: SourceHighlightRange[] }
+export interface WebviewTargetRangesMessage { type: 'target-ranges'; context: PreviewContext; ranges: SourceHighlightRange[] }
+export interface WebviewPlayFromSelectionRequestMessage { type: 'play-from-selection-request'; context: PreviewContext; requestId: number }
+export interface WebviewContextInvalidatedMessage { type: 'context-invalidated'; context: PreviewContext; cancelRequests?: boolean }
+export interface WebviewSelectTuneMessage { type: 'select-tune'; context: PreviewContext; requestId: number }
+export type WebviewMessage = WebviewReadyMessage | WebviewRenderedMessage | WebviewPlaybackStateMessage |
+  WebviewRevealSourceMessage | WebviewRevealRangeMessage | WebviewLinkageUnavailableMessage |
+  WebviewSourceHighlightMessage | WebviewTargetRangesMessage | WebviewPlayFromSelectionRequestMessage |
+  WebviewContextInvalidatedMessage | WebviewSelectTuneMessage;
 
-/** 播放状态变更：宿主据此维持同一窗口内只有一处预览发声（SPEC-PLAY-01）。 */
-export interface WebviewPlaybackStateMessage {
-  type: 'playback-state';
-  state: 'idle' | 'preparing' | 'playing' | 'paused';
-}
-
-/** 请求宿主打开来源文档并转移焦点（空状态入口，SPEC-STATE-05；目标由宿主按面板绑定决定，不接受任意路径）。 */
-export interface WebviewRevealSourceMessage {
-  type: 'reveal-source';
-}
-
-/** 点击谱面音符后的源码定位请求（SPEC-PLAY-11）：start / end 为字符偏移（左闭右开，abcjs 约定）。 */
-export interface WebviewRevealRangeMessage {
-  type: 'reveal-range';
-  start: number;
-  end: number;
-}
-
-/** 联动无法执行的原因（SPEC-PLAY-11 / 12）：宿主据此说明，不静默失败。 */
-export type LinkageUnavailableReason =
-  | 'no-mapping'
-  | 'no-selection'
-  | 'update-pending'
-  | 'stale-score';
-
-/** 联动无法执行时的说明请求（SPEC-PLAY-11 / 12）。 */
-export interface WebviewLinkageUnavailableMessage {
-  type: 'linkage-unavailable';
-  reason: LinkageUnavailableReason;
-}
-
-/** 源码区间（字符偏移，左闭右开）：播放高亮回传与目标轮廓回传共用。 */
-export interface SourceHighlightRange {
-  start: number;
-  end: number;
-}
-
-/** 播放高亮回传（SPEC-PLAY-11）：宿主对可见源码编辑器设装饰，不滚动、不移动光标；空数组表示清除。 */
-export interface WebviewSourceHighlightMessage {
-  type: 'source-highlight';
-  ranges: SourceHighlightRange[];
-}
-
-/** 当前目标音符的源码区间回传（SPEC-PLAY-11）：宿主据此同步编辑器侧轮廓标记，不滚动、不移动光标；空数组表示清除。 */
-export interface WebviewTargetRangesMessage {
-  type: 'target-ranges';
-  ranges: SourceHighlightRange[];
-}
-
-/**
- * 预览控制区"从此处播放"按钮的起播请求（SPEC-PLAY-12）：与命令共用宿主路径
- * （先刷新待更新文档、按面板绑定文档执行）；位置由预览内选择决定，无载荷。
- */
-export interface WebviewPlayFromSelectionRequestMessage {
-  type: 'play-from-selection-request';
-}
-
-export type WebviewMessage =
-  | WebviewReadyMessage
-  | WebviewRenderedMessage
-  | WebviewPlaybackStateMessage
-  | WebviewRevealSourceMessage
-  | WebviewRevealRangeMessage
-  | WebviewLinkageUnavailableMessage
-  | WebviewSourceHighlightMessage
-  | WebviewTargetRangesMessage
-  | WebviewPlayFromSelectionRequestMessage;
-
-/** 解析 webview 消息：只接受形状完整的已登记类型，丢弃额外字段。 */
-export function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
-  if (typeof value !== 'object' || value === null) {
-    return undefined;
-  }
-  const message = value as Record<string, unknown>;
-  if (message.type === 'ready') {
-    return { type: 'ready' };
-  }
-  if (
-    message.type === 'rendered' &&
-    isDocumentVersion(message.version) &&
-    typeof message.ok === 'boolean'
-  ) {
-    return { type: 'rendered', version: message.version, ok: message.ok };
-  }
-  if (message.type === 'playback-state' && isPlaybackState(message.state)) {
-    return { type: 'playback-state', state: message.state };
-  }
-  if (message.type === 'reveal-source') {
-    return { type: 'reveal-source' };
-  }
-  if (
-    message.type === 'reveal-range' &&
-    isCharOffset(message.start) &&
-    isCharOffset(message.end)
-  ) {
-    return { type: 'reveal-range', start: message.start, end: message.end };
-  }
-  if (message.type === 'linkage-unavailable' && isLinkageReason(message.reason)) {
-    return { type: 'linkage-unavailable', reason: message.reason };
-  }
-  if (message.type === 'source-highlight' && isCharRanges(message.ranges)) {
-    // 逐项重构建：按类型校验的同时丢弃额外字段（SPEC-ENV-04）
-    return {
-      type: 'source-highlight',
-      ranges: message.ranges.map((range) => ({ start: range.start, end: range.end })),
-    };
-  }
-  if (message.type === 'target-ranges' && isCharRanges(message.ranges)) {
-    // 逐项重构建：按类型校验的同时丢弃额外字段（SPEC-ENV-04）
-    return {
-      type: 'target-ranges',
-      ranges: message.ranges.map((range) => ({ start: range.start, end: range.end })),
-    };
-  }
-  if (message.type === 'play-from-selection-request') {
-    return { type: 'play-from-selection-request' };
-  }
-  return undefined;
-}
-
-/** 宿主推送的文档内容（经就绪握手与文档变化事件触发，SPEC-CMD-06）。 */
 export interface DocumentMessage {
   type: 'document';
   uri: string;
@@ -147,121 +30,108 @@ export interface DocumentMessage {
   abc: string;
   isUntitled: boolean;
   version: number;
+  viewId: number;
+  revision: number;
+  /** 首次源码意图优先于默认第一首；编号属于宿主操作序列。 */
+  initialRequest?: { requestId: number; offset: number };
+}
+export type PlaybackMessage = { type: 'playback'; viewId: number; requestId: number } & (
+  { action: 'toggle'; context: PreviewContext } | { action: 'pause' | 'stop' }
+);
+export interface CursorMessage { type: 'cursor'; context: PreviewContext; offset: number | null }
+export interface PlayFromCursorMessage { type: 'play-from-cursor'; context: PreviewContext; requestId: number; offset: number }
+export interface PlayFromSelectionMessage { type: 'play-from-selection'; context: PreviewContext; requestId: number; targetRequestId?: number }
+export interface SelectionSnapshotMessage { type: 'selection-snapshot'; viewId: number; requestId: number; document: DocumentMessage }
+export type HostMessage = DocumentMessage | PlaybackMessage | CursorMessage | PlayFromCursorMessage | PlayFromSelectionMessage | SelectionSnapshotMessage;
+
+export function sameContext(first: PreviewContext | undefined, second: PreviewContext): boolean {
+  return first?.viewId === second.viewId && first.revision === second.revision && first.version === second.version && first.selection === second.selection;
 }
 
-/**
- * 宿主发出的播放操作：toggle（播放 / 暂停 / 准备中取消起播）、
- * pause（隐藏或预览接替触发的暂停）、stop（停音并归零）。
- */
-export interface PlaybackMessage {
-  type: 'playback';
-  action: 'toggle' | 'pause' | 'stop';
+export function isSequence(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+function object(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+function parseContext(value: unknown): PreviewContext | undefined {
+  const context = object(value);
+  if (context === undefined || !isSequence(context.viewId) || !isSequence(context.revision) || !isSequence(context.version) || !isSequence(context.selection)) return undefined;
+  return { viewId: context.viewId, revision: context.revision, version: context.version, selection: context.selection };
+}
+function isRange(value: unknown): value is SourceHighlightRange {
+  const range = object(value);
+  return range !== undefined && isSequence(range.start) && isSequence(range.end) && range.start < range.end;
+}
+function isRanges(value: unknown): value is SourceHighlightRange[] {
+  return Array.isArray(value) && value.length <= 16 && value.every(isRange);
+}
+function isReason(value: unknown): value is LinkageUnavailableReason {
+  return value === 'no-mapping' || value === 'no-selection' || value === 'update-pending' || value === 'stale-score' || value === 'choose-tune' || value === 'structure-unreliable';
 }
 
-export type HostMessage =
-  | DocumentMessage
-  | PlaybackMessage
-  | CursorMessage
-  | PlayFromCursorMessage
-  | PlayFromSelectionMessage;
-
-/**
- * 源码光标位置推送（SPEC-PLAY-11）：webview 据此更新谱面查阅标记，不触发播放；
- * null 表示光标不在当前曲目或不可用，清除标记。
- */
-export interface CursorMessage {
-  type: 'cursor';
-  offset: number | null;
+export function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
+  const message = object(value);
+  if (message === undefined) return undefined;
+  if (message.type === 'ready') return { type: 'ready' };
+  if (message.type === 'reveal-source' && isSequence(message.viewId)) return { type: 'reveal-source', viewId: message.viewId };
+  const context = parseContext(message.context);
+  if (context === undefined) return undefined;
+  switch (message.type) {
+    case 'context-invalidated':
+      if (message.cancelRequests !== undefined && typeof message.cancelRequests !== 'boolean') return undefined;
+      return { type: message.type, context, ...(message.cancelRequests === undefined ? {} : { cancelRequests: message.cancelRequests }) };
+    case 'rendered':
+      return typeof message.ok === 'boolean' && typeof message.linkable === 'boolean'
+        ? { type: message.type, context, ok: message.ok, linkable: message.linkable } : undefined;
+    case 'playback-state':
+      return message.state === 'idle' || message.state === 'preparing' || message.state === 'playing' || message.state === 'paused'
+        ? { type: message.type, context, state: message.state } : undefined;
+    case 'reveal-range':
+      return isRange(message) && isSequence(message.requestId) ? { type: message.type, context, requestId: message.requestId, start: message.start, end: message.end } : undefined;
+    case 'source-highlight':
+    case 'target-ranges':
+      return isRanges(message.ranges) ? { type: message.type, context, ranges: message.ranges.map(({ start, end }) => ({ start, end })) } : undefined;
+    case 'linkage-unavailable': return isReason(message.reason) ? { type: message.type, context, reason: message.reason } : undefined;
+    case 'play-from-selection-request':
+    case 'select-tune': return isSequence(message.requestId) ? { type: message.type, context, requestId: message.requestId } : undefined;
+    default: return undefined;
+  }
 }
 
-/** 从源码光标起播（SPEC-PLAY-12）：按映射定位起播；无有效映射时由 webview 回原因说明。 */
-export interface PlayFromCursorMessage {
-  type: 'play-from-cursor';
-  offset: number;
-}
-
-/** 从预览当前目标音符起播（SPEC-PLAY-12）：无目标或映射失效时由 webview 回原因说明。 */
-export interface PlayFromSelectionMessage {
-  type: 'play-from-selection';
-}
-
-/** 解析宿主消息：webview 侧同样只接受已登记形状，防御消息桥之外的注入来源。 */
 export function parseHostMessage(value: unknown): HostMessage | undefined {
-  if (typeof value !== 'object' || value === null) {
-    return undefined;
+  const message = object(value);
+  if (message === undefined) return undefined;
+  if (message.type === 'document') {
+    if (typeof message.uri !== 'string' || typeof message.fileName !== 'string' || typeof message.abc !== 'string' || typeof message.isUntitled !== 'boolean' || !isSequence(message.version) || !isSequence(message.viewId) || !isSequence(message.revision)) return undefined;
+    const result: DocumentMessage = { type: 'document', uri: message.uri, fileName: message.fileName, abc: message.abc, isUntitled: message.isUntitled, version: message.version, viewId: message.viewId, revision: message.revision };
+    if (message.initialRequest !== undefined) {
+      const request = object(message.initialRequest);
+      if (request === undefined || !isSequence(request.requestId) || !isSequence(request.offset) || request.offset > result.abc.length) return undefined;
+      result.initialRequest = { requestId: request.requestId, offset: request.offset };
+    }
+    return result;
   }
-  const message = value as Record<string, unknown>;
-  if (
-    message.type === 'document' &&
-    typeof message.uri === 'string' &&
-    typeof message.fileName === 'string' &&
-    typeof message.abc === 'string' &&
-    typeof message.isUntitled === 'boolean' &&
-    isDocumentVersion(message.version)
-  ) {
-    return {
-      type: 'document',
-      uri: message.uri,
-      fileName: message.fileName,
-      abc: message.abc,
-      isUntitled: message.isUntitled,
-      version: message.version,
-    };
+  if (message.type === 'selection-snapshot') {
+    if (object(message.document)?.type !== 'document') return undefined;
+    const document = parseHostMessage(message.document);
+    return isSequence(message.viewId) && isSequence(message.requestId) && document?.type === 'document' && document.viewId === message.viewId
+      ? { type: message.type, viewId: message.viewId, requestId: message.requestId, document } : undefined;
   }
-  if (message.type === 'playback' && isPlaybackAction(message.action)) {
-    return { type: 'playback', action: message.action };
+  if (message.type === 'playback') {
+    if (!isSequence(message.viewId) || !isSequence(message.requestId)) return undefined;
+    if (message.action === 'pause' || message.action === 'stop') return { type: message.type, viewId: message.viewId, requestId: message.requestId, action: message.action };
+    const context = parseContext(message.context);
+    return message.action === 'toggle' && context?.viewId === message.viewId
+      ? { type: message.type, viewId: message.viewId, requestId: message.requestId, action: message.action, context } : undefined;
   }
-  if (message.type === 'cursor' && (message.offset === null || isCharOffset(message.offset))) {
-    return { type: 'cursor', offset: message.offset };
-  }
-  if (message.type === 'play-from-cursor' && isCharOffset(message.offset)) {
-    return { type: 'play-from-cursor', offset: message.offset };
-  }
-  if (message.type === 'play-from-selection') {
-    return { type: 'play-from-selection' };
+  const context = parseContext(message.context);
+  if (context === undefined) return undefined;
+  if (message.type === 'cursor' && (message.offset === null || isSequence(message.offset))) return { type: message.type, context, offset: message.offset };
+  if (message.type === 'play-from-cursor' && isSequence(message.requestId) && isSequence(message.offset)) return { type: message.type, context, requestId: message.requestId, offset: message.offset };
+  if (message.type === 'play-from-selection' && isSequence(message.requestId)) {
+    if (message.targetRequestId !== undefined && !isSequence(message.targetRequestId)) return undefined;
+    return { type: message.type, context, requestId: message.requestId, ...(message.targetRequestId === undefined ? {} : { targetRequestId: message.targetRequestId }) };
   }
   return undefined;
-}
-
-/** 文档版本：非负整数（SPEC-ENV-04 的数值范围校验）。 */
-function isDocumentVersion(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
-
-/** 字符偏移：非负整数（源文档 offset 与 abcjs startChar / endChar 的口径）。 */
-function isCharOffset(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
-
-/** 区间数组上限：一次播放高亮 / 目标轮廓涉及的音符数远超实际需要时视为异常消息。 */
-const CHAR_RANGES_MAX = 16;
-
-function isLinkageReason(value: unknown): value is LinkageUnavailableReason {
-  return (
-    value === 'no-mapping' ||
-    value === 'no-selection' ||
-    value === 'update-pending' ||
-    value === 'stale-score'
-  );
-}
-
-function isCharRanges(value: unknown): value is SourceHighlightRange[] {
-  if (!Array.isArray(value) || value.length > CHAR_RANGES_MAX) {
-    return false;
-  }
-  return value.every(
-    (item: unknown) =>
-      typeof item === 'object' &&
-      item !== null &&
-      isCharOffset((item as Record<string, unknown>).start) &&
-      isCharOffset((item as Record<string, unknown>).end),
-  );
-}
-
-function isPlaybackState(value: unknown): value is WebviewPlaybackStateMessage['state'] {
-  return value === 'idle' || value === 'preparing' || value === 'playing' || value === 'paused';
-}
-
-function isPlaybackAction(value: unknown): value is PlaybackMessage['action'] {
-  return value === 'toggle' || value === 'pause' || value === 'stop';
 }

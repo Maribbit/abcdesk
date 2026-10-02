@@ -7,6 +7,15 @@
  */
 
 const EN: Record<string, string> = {
+  'tune-position': 'Tune {0} / {1}',
+  'untitled-tune': 'Untitled tune',
+  'choose-tune': 'Please select a tune again.',
+  'missing-tune-id': 'missing',
+  'confirm-tune': 'Confirm this tune',
+  'structure-unreliable': 'Some tune boundaries could not be identified. Check the ABC source.',
+  'switching-tune': 'Refreshing the document to select the tune…',
+  'reference-tune': 'Reference: {0} · X:{1} · version {2}.',
+  'voices-changed': 'Voices have changed. Please check the sound settings again.',
   'render-failed': 'Could not render the score. The ABC source may contain errors.',
   loop: 'Loop',
   play: 'Play',
@@ -51,6 +60,15 @@ const EN: Record<string, string> = {
 };
 
 const ZH_CN: Record<string, string> = {
+  'tune-position': '第 {0} / {1} 首',
+  'untitled-tune': '无标题曲目',
+  'choose-tune': '请重新选择曲目。',
+  'missing-tune-id': '缺失',
+  'confirm-tune': '确认此曲目',
+  'structure-unreliable': '部分曲目分界无法可靠识别，请检查 ABC 源码。',
+  'switching-tune': '正在获取最新文档并选择曲目…',
+  'reference-tune': '参考谱：{0} · X:{1} · 版本 {2}。',
+  'voices-changed': '声部已变化，请重新检查发声设置。',
   'render-failed': '无法渲染谱面。ABC 源码可能包含错误。',
   loop: '循环',
   play: '播放',
