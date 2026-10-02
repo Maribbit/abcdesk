@@ -263,6 +263,16 @@ export class PreviewPanelManager implements vscode.Disposable {
     return undefined;
   }
 
+  /** 绑定该文档的预览面板是否仍打开（SPEC-EXP-03）：从预览发起的导出在面板关闭后取消。 */
+  isPreviewOpen(uri: string): boolean {
+    return this.panels.has(uri);
+  }
+
+  /** 预览是否落后于最新文档（SPEC-EXP-01）：文档已变化、新版本尚未渲染确认。 */
+  isPreviewStale(uri: string): boolean {
+    return this.panels.get(uri)?.suspend === true;
+  }
+
   /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）；连续变化防抖，只推送稳定后的最新版本。 */
   notifyDocumentChanged(document: vscode.TextDocument): void {
     const uri = document.uri.toString();

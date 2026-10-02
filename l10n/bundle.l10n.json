@@ -1,5 +1,4 @@
 {
-  "Command {0} is not implemented yet.": "Command {0} is not implemented yet.",
   "No ABC target is available.": "No ABC target is available.",
   "{0} (Unsaved)": "{0} (Unsaved)",
   "Place the cursor on a note, or select one on the score.": "Place the cursor on a note, or select one on the score.",
@@ -7,5 +6,17 @@
   "No note matches the current position.": "No note matches the current position.",
   "The file has unapplied changes; pause first to apply them.": "The file has unapplied changes; pause first to apply them.",
   "The preview shows an older version of the score, so it cannot be used.": "The preview shows an older version of the score, so it cannot be used.",
-  "The source document is unavailable.": "The source document is unavailable."
+  "The source document is unavailable.": "The source document is unavailable.",
+  "Select a tune to export": "Select a tune to export",
+  "Exporting MIDI…": "Exporting MIDI…",
+  "Exporting SVG…": "Exporting SVG…",
+  "Export MIDI — ABC tempo and voices as written (no player practice settings)": "Export MIDI — ABC tempo and voices as written (no player practice settings)",
+  "Export SVG": "Export SVG",
+  "The document has no notes to export.": "The document has no notes to export.",
+  "The document changed; export canceled. Run the export again.": "The document changed; export canceled. Run the export again.",
+  "The export cannot overwrite the source ABC file.": "The export cannot overwrite the source ABC file.",
+  "Export failed: {0}": "Export failed: {0}",
+  "Exported to {0}.": "Exported to {0}.",
+  "Exporting the current document, not the version shown in the preview.": "Exporting the current document, not the version shown in the preview.",
+  "The document has unsaved changes; they are included in the export.": "The document has unsaved changes; they are included in the export."
 }

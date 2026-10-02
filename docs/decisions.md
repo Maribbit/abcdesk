@@ -2,6 +2,12 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-10-02 导出实现（Node 侧独立生成 / stub DOM 渲染 SVG / 快照复核）
+
+- 决策：导出 MIDI / SVG 两命令共用一条流程（src/extension/exports.ts），在扩展宿主（Node）侧直接生成、不复用预览渲染实例：MIDI 走 `parseOnly` + `synth.getMidiFile(tune, { midiOutputType: 'binary' })`（无 DOM 依赖）；SVG 用最小 DOM stub（createElementNS / setAttribute / appendChild / getBBox 估算等）驱动 `renderAbc` 后序列化（渲染与序列化全程同步、不跨 await 交错，结束即还原全局 DOM），排版基准固定 staffwidth 740、补首个白底 rect、height 向上取整、currentColor → #000000、滤除 on* 事件属性；abcjs 动态 import 惰性加载，仅首次导出时初始化。曲目文本直接取 `TuneBook.tune.abc`：实证其已并入文件级 `%%` 指令（abc_parse_book.js `tune.abc = directives + tune`），不得再另拼 `header`（会重复指令）。判空沿用预览判据 `el_type === 'note'`（全休止符也是 note，不算空白）。流程：锁定来源（预览在前台取绑定文档，否则活动编辑器）→ 读快照（打开文档以缓冲区为准、含未保存修改）→ 曲目确认（单曲直出；多曲目 QuickPick 按光标所属曲目预选）→ 通知式进度可取消 → 原生保存对话框 → 写前复核（不覆盖源文件、预览来源仍打开、文本未变，否则取消并提示）。文件名：文档基本名 ‖ 曲名 ‖ Untitled，清洗控制字符与 `<>:"/\|?*`、80 截断；多曲目追加序号与曲名（与基本名重复时不重复）。
+- 理由：SPEC-EXP-01 / 04 要求导出与预览独立准备——预览关闭或落后不影响导出，前两处均以提示（而非阻止）说明实际导出对象；纯 Node 生成避免 webview 往返与渲染时序耦合。快照复核链落实 CMD-13“执行时文档快照”语义：变化即取消并提示重试，不静默导出旧内容（SPEC-EXP-03、PERF-09）。stub DOM 能力面经 Node 原型实跑验证（与浏览器渲染对照过形状 / 颜色）后忠实移植。指令并入 tune.abc 为实证结论，拼 header 会致 `%%MIDI` 等重复。
+- 影响：新增 src/core/exports/（abcjs / tunes / filename / svg-dom / svg / midi 六模块）与 src/extension/exports.ts；extension.ts 注册两命令并删除“未实现”占位循环（8 命令全部真实注册）；previewPanel.ts 增 isPreviewOpen / isPreviewStale；l10n 增 12 键（中英同步）；新增 test/exports.test.ts（18 例：曲目解析 / 判空 / 命名 / MIDI 与 SVG 生成及边界）；manifest 不变（命令与标题早已声明）；EXP 域验收为 manual（manual-checks 已登记 8 条，本批无新增）。
+
 ## 2026-10-01 循环开关实现（sync 字形 / stop→seek→start 回绕 / 五段等距）
 
 - 决策：循环开关落地为传输组常驻切换钮（`#loop`，`sync` 字形）＋控制器 `loopEnabled` 标志；自然结束（`handleEnded`）且开关开启时按 `stop → seek(0) → start → syncTimer(0)` 回绕继续，保持播放相位与播放高亮，不清状态、不调 `onTimeline(null)`——回绕不算自然结束，待更新内容仍待停止 / 暂停时按 STATE-07 应用。开关只改行为（默认关、不启播、不修改 ABC），跨停止与换版保留（会话级；SET-03 持久化时并入）。ON 态经 `aria-pressed` + `--vscode-toolbar-activeBackground` 底色呈现（回退 hover 色），样式规则置于 hover 之后靠同特异性后置胜出。图标节奏扩为 `% ⟳ ⟲ ▶ ⏹` 五者墨迹等距 18px：`#speed-group` 右距 1.4→2.4px；传输组内改逐对 margin（gap 归零、`#play` 左 1.45px、`#stop` 左 2.2px）——两对间距因字形墨迹收缩不同而取值不同，gap 无法逐对控制。本条的间距数字取代“顶栏排列调整”条目的 1.4px / 2.2px。

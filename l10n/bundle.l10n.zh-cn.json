@@ -1,5 +1,4 @@
 {
-  "Command {0} is not implemented yet.": "命令 {0} 尚未实现。",
   "No ABC target is available.": "没有可用的 ABC 目标。",
   "{0} (Unsaved)": "{0}（尚未保存）",
   "Place the cursor on a note, or select one on the score.": "把光标移到音符上，或在谱面点选音符。",
@@ -7,5 +6,17 @@
   "No note matches the current position.": "当前位置没有可对应的音符。",
   "The file has unapplied changes; pause first to apply them.": "文件有尚未应用的更改；请先暂停以应用。",
   "The preview shows an older version of the score, so it cannot be used.": "预览显示的是旧版本曲谱，暂不可用。",
-  "The source document is unavailable.": "来源文档不可用。"
+  "The source document is unavailable.": "来源文档不可用。",
+  "Select a tune to export": "选择要导出的曲目",
+  "Exporting MIDI…": "正在导出 MIDI…",
+  "Exporting SVG…": "正在导出 SVG…",
+  "Export MIDI — ABC tempo and voices as written (no player practice settings)": "导出 MIDI —— 按 ABC 原速度与声部（不含播放器练习设置）",
+  "Export SVG": "导出 SVG",
+  "The document has no notes to export.": "文档没有可导出的音符内容。",
+  "The document changed; export canceled. Run the export again.": "文档已变化，本次导出已取消。请重新导出。",
+  "The export cannot overwrite the source ABC file.": "导出不能覆盖来源 ABC 文件。",
+  "Export failed: {0}": "导出失败：{0}",
+  "Exported to {0}.": "已导出到 {0}。",
+  "Exporting the current document, not the version shown in the preview.": "将导出当前文档，而非预览中显示的版本。",
+  "The document has unsaved changes; they are included in the export.": "文档包含未保存的修改，将一并导出。"
 }

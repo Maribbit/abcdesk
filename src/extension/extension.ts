@@ -1,21 +1,10 @@
 import * as vscode from 'vscode';
 import { choosePreviewTarget, isAbcTarget, type TargetCandidate } from '../core/target';
+import { runExportCommand } from './exports';
 import { PreviewPanelManager } from './previewPanel';
 
-/**
- * 公开命令 ID：必须与 package.json、docs/spec/cmd.md（SPEC-CMD-01）逐字一致。
- * 数量与 ID 集合由 test/manifest.test.ts 的绑定测试守住。
- */
-const COMMAND_IDS = [
-  'abcdesk.openPreviewToSide',
-  'abcdesk.togglePlayback',
-  'abcdesk.stop',
-  'abcdesk.playFromCursor',
-  'abcdesk.playFromSelectedNote',
-  'abcdesk.goToSource',
-  'abcdesk.exportMidi',
-  'abcdesk.exportSvg',
-] as const;
+// 公开命令恰为八个（SPEC-CMD-01）：ID 必须与 package.json、docs/spec/cmd.md 逐字一致，
+// 数量与 ID 集合由 test/manifest.test.ts 的绑定测试守住；命令注册集中在 activate。
 
 export function activate(context: vscode.ExtensionContext): void {
   const previews = new PreviewPanelManager(context.extensionUri);
@@ -34,27 +23,10 @@ export function activate(context: vscode.ExtensionContext): void {
       playFromSelectedNoteCommand(previews),
     ),
     vscode.commands.registerCommand('abcdesk.goToSource', () => goToSourceCommand(previews)),
+    // 导出（M0）：MIDI / SVG 独立准备与保存流程（SPEC-EXP-01 ~ 08）。
+    vscode.commands.registerCommand('abcdesk.exportMidi', () => runExportCommand(previews, 'midi')),
+    vscode.commands.registerCommand('abcdesk.exportSvg', () => runExportCommand(previews, 'svg')),
   );
-
-  // 其余命令为骨架占位：实现前必须先补全对应规格条目并写绑定测试。
-  const implemented = new Set<string>([
-    'abcdesk.openPreviewToSide',
-    'abcdesk.togglePlayback',
-    'abcdesk.stop',
-    'abcdesk.playFromCursor',
-    'abcdesk.playFromSelectedNote',
-    'abcdesk.goToSource',
-  ]);
-  for (const id of COMMAND_IDS) {
-    if (implemented.has(id)) {
-      continue;
-    }
-    context.subscriptions.push(
-      vscode.commands.registerCommand(id, () => {
-        void vscode.window.showInformationMessage(vscode.l10n.t('Command {0} is not implemented yet.', id));
-      }),
-    );
-  }
 
   // 非播放期间的文档变化（含未保存修改与外部写入重载）推送到对应预览；
   // 播放中的待更新 / 换版规则由后续批次实现（见 docs/spec/state.md）。
