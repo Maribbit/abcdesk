@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 // 绑定见 docs/spec/env.md；it.todo 为待实现条目的占位（实现时替换为真实断言）。
 
+// 同时检查静态 / 动态导入与 require，覆盖单 / 双引号及 fs/promises 等子路径。
+const NODE_FILE_IMPORT = /\b(?:from\s*|import\s*(?:\(\s*)?|require\s*\(\s*)['"](?:node:)?(?:fs|path)(?:\/[^'"]*)?['"]/;
+
 interface PackageManifest {
   activationEvents?: string[];
   capabilities?: {
@@ -38,10 +41,33 @@ describe('运行环境与安全（SPEC-ENV 域）', () => {
     expect(manifest.capabilities?.virtualWorkspaces?.supported).not.toBe(false);
   });
 
-  it('[SPEC-ENV-05] 扩展侧不 import node:fs / node:path，资源仅经 asWebviewUri 加载', () => {
+  it.each([
+    "import { readFile } from 'node:fs/promises';",
+    'import { readFile } from "fs/promises";',
+    "import * as fs from 'node:fs';",
+    'import fs from "fs";',
+    "import path from 'node:path';",
+    'import path from "path";',
+    "import path from 'path/posix';",
+    'import path from "node:path/win32";',
+    "import 'node:fs/promises';",
+    'import("node:fs/promises")',
+    "require('fs/promises')",
+  ])('文件访问边界扫描可识别：%s', (source) => {
+    expect(source).toMatch(NODE_FILE_IMPORT);
+  });
+
+  it.each([
+    "import fs from 'fs-extra';",
+    "import fs from './fs';",
+    "import * as vscode from 'vscode';",
+  ])('文件访问边界扫描不误判其他模块：%s', (source) => {
+    expect(source).not.toMatch(NODE_FILE_IMPORT);
+  });
+
+  it('[SPEC-ENV-05] 扩展侧不导入 Node fs / path（含子路径），资源仅经 asWebviewUri 加载', () => {
     for (const source of sourceFiles('src/extension')) {
-      expect(source).not.toMatch(/from '(node:)?fs'/);
-      expect(source).not.toMatch(/from '(node:)?path'/);
+      expect(source).not.toMatch(NODE_FILE_IMPORT);
     }
     // 核心代码避免 Node 专用依赖（不主动堵死 vscode.dev，见 SPEC-ENV-05）
     for (const source of sourceFiles('src/core')) {

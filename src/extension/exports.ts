@@ -5,7 +5,6 @@
  *
  * 导出不依赖预览 / 播放：没有预览也可用，已有预览时不改变其状态（SPEC-EXP-04）。
  */
-import { readFile, writeFile } from 'node:fs/promises';
 import * as vscode from 'vscode';
 import { suggestExportFileName } from '../core/exports/filename';
 import { generateMidiBytes } from '../core/exports/midi';
@@ -130,7 +129,8 @@ export async function runExportCommand(
   }
 
   try {
-    await writeFile(saveUri.fsPath, prepared.bytes);
+    // SPEC-ENV-05：保留完整 URI，由 VS Code 路由到对应文件系统提供者。
+    await vscode.workspace.fs.writeFile(saveUri, prepared.bytes);
   } catch (error) {
     void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', errorMessage(error)));
     return;
@@ -169,7 +169,7 @@ async function readSnapshot(uri: vscode.Uri): Promise<ExportSnapshot | undefined
     return { text: open.getText(), dirty: open.isDirty };
   }
   try {
-    return { text: new TextDecoder().decode(await readFile(uri.fsPath)), dirty: false };
+    return { text: new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)), dirty: false };
   } catch {
     return undefined;
   }
