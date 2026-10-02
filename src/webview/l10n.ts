@@ -8,6 +8,7 @@
 
 const EN: Record<string, string> = {
   'render-failed': 'Could not render the score. The ABC source may contain errors.',
+  loop: 'Loop',
   play: 'Play',
   pause: 'Pause',
   'cancel-prepare': 'Cancel playback',
@@ -51,6 +52,7 @@ const EN: Record<string, string> = {
 
 const ZH_CN: Record<string, string> = {
   'render-failed': '无法渲染谱面。ABC 源码可能包含错误。',
+  loop: '循环',
   play: '播放',
   pause: '暂停',
   'cancel-prepare': '取消起播',

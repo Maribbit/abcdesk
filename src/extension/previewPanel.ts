@@ -665,13 +665,16 @@ export class PreviewPanelManager implements vscode.Disposable {
       row-gap: 8px;
       padding: 6px 12px;
     }
-    /* 稳定分组（SPEC-PLAY-13）：组内不换行、仅组间断行；默认组间距 12px（循环实现后与播放 / 停止同组） */
+    /* 稳定分组（SPEC-PLAY-13）：组内不换行、仅组间断行；默认组间距 12px */
     .abcdesk-control-group { display: inline-flex; align-items: center; gap: 8px; }
     .abcdesk-control-group:not(:last-child) { margin-right: 12px; }
-    /* 图标节奏（SPEC-PLAY-13）：% ⟳ ▶ ⏹ 墨迹间距统一 18px——速度组 → 传输组 1.4px、播放 ↔ 停止 2.2px；
-       数值由无头 Chrome 4 倍放大像素实测校准（% ⟳ ▶ ⏹ 三项均 18.0px），改动前先复测 */
-    #speed-group { margin-right: 1.4px; }
-    #transport-group { gap: 2.2px; }
+    /* 图标节奏（SPEC-PLAY-13）：% ⟳ ⟲ ▶ ⏹ 墨迹间距统一 18px——速度组 → 传输组 2.4px、循环 → 播放 1.45px、
+       播放 → 停止 2.2px；组内两对间距不同（字形墨迹收缩各异），故逐对 margin 而非 gap；
+       数值由无头 Chrome 4 倍放大像素实测校准（四段均 18.00px），改动前先复测 */
+    #speed-group { margin-right: 2.4px; }
+    #transport-group { gap: 0; }
+    #transport-group #play { margin-left: 1.45px; }
+    #transport-group #stop { margin-left: 2.2px; }
     /* 谱面区：flex 拉伸把键盘 dock 顶到视口底边（短文档也贴底）；滚动仍走整页 */
     #score-region {
       flex: 1 1 auto;
@@ -706,6 +709,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 7px;
     }
     #controls button.codicon:hover { background-color: var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 25%)); }
+    /* 循环开关的持续按下态（SPEC-PLAY-03）：aria-pressed 承载状态、active 主题色优先回退 hover 色；
+       规则置于 hover 之后——同特异性后置胜出，ON 按钮悬停时保持按下底色；:disabled 在其后保持优先级 */
+    #controls button.codicon[aria-pressed='true'] {
+      background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 25%)));
+    }
     #controls button.codicon:disabled { background-color: transparent; }
     /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，底边避开键盘 dock（高度经 CSS 变量同步） */
     #follow-resume {
@@ -1008,8 +1016,10 @@ export class PreviewPanelManager implements vscode.Disposable {
           <span id="speed-hint" hidden></span>
         </span>
       </span>
-      <!-- 播放/停止单独成组：极窄面板换行时整组下移，不被速度组连累隐藏 -->
+      <!-- 循环、播放 / 暂停、停止同组（SPEC-PLAY-13 / 03）：极窄面板换行时整组下移，不被速度组连累隐藏；
+           循环为常驻切换钮（默认关），持续状态经 aria-pressed 呈现 -->
       <span class="abcdesk-control-group" id="transport-group">
+        <button id="loop" type="button" class="codicon codicon-sync" aria-pressed="false"></button>
         <button id="play" type="button" class="codicon codicon-play"></button>
         <button id="stop" type="button" class="codicon codicon-debug-stop"></button>
       </span>

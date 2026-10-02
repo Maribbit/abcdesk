@@ -45,6 +45,7 @@ function queryElement<T extends HTMLElement>(id: string): T {
 
 const topbarElement = queryElement('topbar');
 const scoreElement = queryElement('score');
+const loopButton = queryElement<HTMLButtonElement>('loop');
 const playButton = queryElement<HTMLButtonElement>('play');
 const stopButton = queryElement<HTMLButtonElement>('stop');
 const playbackStatusElement = queryElement('playback-status');
@@ -157,6 +158,10 @@ function refreshPlaybackUi(): void {
   stopButton.setAttribute('aria-label', t('stop'));
   // 停止仅在有可停止内容时可用；准备中保留（= 取消并归零，SPEC-PLAY-01）
   stopButton.disabled = phase === 'idle';
+  // 循环开关（SPEC-PLAY-03）：字形固定，持续状态经 aria-pressed 呈现（ON 态底色见样式）
+  loopButton.title = t('loop');
+  loopButton.setAttribute('aria-label', t('loop'));
+  loopButton.setAttribute('aria-pressed', String(controller.getLoopEnabled()));
   playbackStatusElement.hidden = statusKey === null; // 无文案时不占位（SPEC-PLAY-13）
   playbackStatusElement.textContent = statusKey === null ? '' : t(statusKey);
   updateFollowResumeButton();
@@ -873,6 +878,8 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
 });
 
+// 循环开关（SPEC-PLAY-03）：切换不改变当前播放相位，下一次自然结束边界起生效
+loopButton.addEventListener('click', () => controller.setLoopEnabled(!controller.getLoopEnabled()));
 playButton.addEventListener('click', () => controller.toggle());
 stopButton.addEventListener('click', () => controller.stop());
 // "从此处播放"（SPEC-PLAY-12）：请求宿主按命令路径起播（先刷新待更新文档、失败说明复用命令路径）

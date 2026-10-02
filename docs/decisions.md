@@ -2,6 +2,12 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-10-01 循环开关实现（sync 字形 / stop→seek→start 回绕 / 五段等距）
+
+- 决策：循环开关落地为传输组常驻切换钮（`#loop`，`sync` 字形）＋控制器 `loopEnabled` 标志；自然结束（`handleEnded`）且开关开启时按 `stop → seek(0) → start → syncTimer(0)` 回绕继续，保持播放相位与播放高亮，不清状态、不调 `onTimeline(null)`——回绕不算自然结束，待更新内容仍待停止 / 暂停时按 STATE-07 应用。开关只改行为（默认关、不启播、不修改 ABC），跨停止与换版保留（会话级；SET-03 持久化时并入）。ON 态经 `aria-pressed` + `--vscode-toolbar-activeBackground` 底色呈现（回退 hover 色），样式规则置于 hover 之后靠同特异性后置胜出。图标节奏扩为 `% ⟳ ⟲ ▶ ⏹` 五者墨迹等距 18px：`#speed-group` 右距 1.4→2.4px；传输组内改逐对 margin（gap 归零、`#play` 左 1.45px、`#stop` 左 2.2px）——两对间距因字形墨迹收缩不同而取值不同，gap 无法逐对控制。本条的间距数字取代“顶栏排列调整”条目的 1.4px / 2.2px。
+- 理由：回绕顺序必须 stop 在 seek 之前——自然结束后 abcjs 不清 `isRunning`（僵尸运行态），直接 seek 会经 `_kickOffSound` 起播、行为不可控；已结束的源 stop 不再派发 ended，可安全清理。相位保持 `playing` 使 STATE-07“循环回到边界不算自然结束”自然成立，无需新分支。字形经 14px 实况模拟对比选定：`debug-restart` 与重置 `refresh` 同为单环箭头、并排无法区分，`debug-rerun` / `debug-restart-frame` 形状过复杂；`sync` 双箭头环是循环 / 重复的通用语汇（🔁）且小尺寸辨识度最好。间距数值经无头 Chrome 4 倍放大像素实测校准（四段均 18.00px，标尺自检通过），与上批同法。
+- 影响：audio.ts（字段、get / set、handleEnded 分支、类头注释）；main.ts（按钮查询、连线、刷新函数同步 aria-pressed）；previewPanel.ts（HTML 按钮、aria-pressed 样式、间距数值）；l10n.ts（`loop` 键，中英）；manual-checks PLAY-03 判据扩展；spec 正文不改（PLAY-03 已含“循环默认关闭、开关本身不启动播放、回边界不触发换版”，实现细节照 P06 先例入本条）。
+
 ## 2026-10-01 顶栏排列调整（速度左置）与 % ⟳ ▶ ⏹ 等距节奏
 
 - 决策：控制区排列改为“速度 → 播放 / 停止 → 声部 → 从此处播放”（原为“播放 / 停止 → 速度、声部 → 从此处播放”）；稳定分组由三组改为四组：速度组（`#speed-group`）、播放 / 停止组（新增 `#transport-group`）、声部组、从此处播放组。百分号、重置、播放、停止四个控件的墨迹间距统一为 18px：列间距改由分组 `margin-right` 显式控制——`#speed-group` 右侧 1.4px、`#transport-group` 组内 gap 2.2px（`#speed-control` 组内 4px gap 照旧）、`#speed-reset` 左距 5.15px。

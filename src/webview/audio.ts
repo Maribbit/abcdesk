@@ -22,7 +22,8 @@ import {
  * 播放引擎（SPEC-PLAY-01 / 02 / 03 / 04 / 05 / 06 / 11 / 12 / 14、SPEC-STATE-04 / 07、SPEC-PERF-06 / 08、SPEC-ENV-07）：
  * - 先渲染谱面，首次明确播放才准备音频；准备成功后直接执行这次仍有效的请求，无需再点一次；
  * - 准备期间再次播放 / 暂停（含隐藏与预览接替触发的暂停）取消起播，晚到完成一律不得发声；
- * - 停止立即停音并回到开头；暂停保留位置；已准备资源可复用（本类合成器 + abcjs 内部音色缓存）；
+ * - 停止立即停音并回到开头；暂停保留位置；循环开启时自然结束回到开头继续、不触发换版（SPEC-PLAY-03）；
+ *   已准备资源可复用（本类合成器 + abcjs 内部音色缓存）；
  * - 内容更新的缓存与统一应用时机由 main 协调（SPEC-STATE-07）；本类经 setTune 采用新曲目并归零；
  * - 演奏时序（TimingCallbacks）与音频同源同时启动：事件回调供 main 更新播放高亮，
  *   setProgress + seek 成对完成定位（SPEC-PLAY-11 / 12；官方 SynthController 同款同步方式）；
@@ -111,6 +112,8 @@ export class PlaybackController {
   private gestureUnlock: (() => void) | undefined;
   /** 速度百分比（SPEC-PLAY-04）：默认 100%，主控时序与音频的重建。 */
   private speed = SPEED_DEFAULT;
+  /** 循环开关（SPEC-PLAY-03）：默认关闭；只改播放行为，不启播、不修改 ABC；跨停止与换版保留（会话级）。 */
+  private loopEnabled = false;
   /** 静音声部索引集合（SPEC-PLAY-06）：跨版本保留，与当前声部清单失配时自然忽略。 */
   private readonly mutedVoices = new Set<number>();
   /** 自动和弦伴奏是否静音（SPEC-PLAY-06）：与显式 ABC 伴奏声部相互独立。 */
@@ -157,6 +160,11 @@ export class PlaybackController {
   /** 当前速度百分比（SPEC-PLAY-04）。 */
   getSpeed(): number {
     return this.speed;
+  }
+
+  /** 循环开关状态（SPEC-PLAY-03）。 */
+  getLoopEnabled(): boolean {
+    return this.loopEnabled;
   }
 
   /** 当前曲目的声部清单与静音状态（SPEC-PLAY-06）：清单随换版重建，静音跨版本保留。 */
@@ -207,6 +215,15 @@ export class PlaybackController {
       this.onTimingsChanged();
     }
     this.applyAudioParams();
+    this.onChange();
+  }
+
+  /** 切换循环（SPEC-PLAY-03）：只改行为、不启动播放、不修改 ABC；播放中切换对本次自然结束边界即时生效。 */
+  setLoopEnabled(enabled: boolean): void {
+    if (this.loopEnabled === enabled) {
+      return;
+    }
+    this.loopEnabled = enabled;
     this.onChange();
   }
 
@@ -949,7 +966,8 @@ export class PlaybackController {
   }
 
   /**
-   * 自然结束（非循环）：停音回到可播放状态并清除播放高亮；位置与再次播放语义待 P01，不补造默认。
+   * 自然结束：循环开启时回到开头继续演奏（SPEC-PLAY-03），否则停音回到可播放状态并清除播放高亮
+   * （位置与再次播放语义待 P01，不补造默认）。
    * 程序化停源（重建 / 播放中 seek）触发的 ended 先由计数排除，其余由相位守卫兜底；
    * abcjs 自然结束后不清 isRunning（僵尸运行态），这里主动 stop 清理，避免后续操作经 seek 误起播。
    */
@@ -965,6 +983,23 @@ export class PlaybackController {
       return; // 手动停止 / 暂停触发的 ended：状态已在对应方法处理
     }
     const instance = this.synthInstance;
+    if (this.loopEnabled) {
+      // 循环（SPEC-PLAY-03）：保持播放相位与播放高亮，回绕不算自然结束——待更新内容由 STATE-07
+      // 在停止 / 暂停时统一应用，回绕本身不触发换版。
+      // 顺序必须 stop → seek → start：自然结束后 abcjs 不清 isRunning（僵尸运行态），
+      // 直接 seek 会经 _kickOffSound 起播；已结束的源 stop 不会再派发 ended，可安全清理。
+      if (instance !== undefined) {
+        try {
+          instance.stop();
+          instance.seek(0, 'percent');
+          instance.start();
+        } catch (error) {
+          console.error('ABC Desk: loop restart failed', error);
+        }
+      }
+      this.syncTimer(0); // 演奏时序同步回到开头，重新回调播放高亮（SPEC-PLAY-11）
+      return;
+    }
     if (instance !== undefined) {
       try {
         instance.stop(); // 清理僵尸运行态（已结束的源不会再派发 ended）
