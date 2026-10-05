@@ -3,8 +3,18 @@ import type * as vscode from 'vscode';
 import { PreviewPanelManager } from '../src/extension/previewPanel';
 import { parseHostMessage, type HostMessage, type PreviewContext } from '../src/core/messages';
 
-const env = vi.hoisted(() => ({ panels: [] as Panel[], documents: [] as Doc[], editors: [] as Editor[], notices: [] as string[], openEditor: undefined as (() => Promise<Editor>) | undefined }));
-function uri(value: string) { return { toString: () => value, path: value.replace('file://', '') }; }
+const env = vi.hoisted(() => ({
+  panels: [] as Panel[], documents: [] as Doc[], editors: [] as Editor[], notices: [] as string[],
+  openEditor: undefined as (() => Promise<Editor>) | undefined,
+  files: new Map<string, string>(), statCalls: 0,
+  watchers: [] as Array<{ create: () => void; change: () => void; delete: () => void; dispose: () => void }>,
+}));
+function uri(value: string): vscode.Uri {
+  const scheme = value.slice(0, value.indexOf(':'));
+  const rest = value.slice(scheme.length + 1);
+  const path = rest.startsWith('//') ? rest.slice(2) : rest;
+  return { scheme, path, fsPath: path, toString: () => value } as unknown as vscode.Uri;
+}
 class Doc {
   uri;
   isUntitled = false;
@@ -45,13 +55,45 @@ class Panel {
   dispose = () => this.disposed();
 }
 vi.mock('vscode', () => ({
-  Uri: { joinPath: (base: { toString(): string }, ...parts: string[]) => uri(`${base.toString()}/${parts.join('/')}`) },
+  Uri: {
+    parse: (value: string) => uri(value),
+    joinPath: (base: { toString(): string }, ...parts: string[]) => uri(`${base.toString()}/${parts.join('/')}`),
+  },
+  RelativePattern: class { constructor(readonly base: unknown, readonly pattern: string) {} },
   ThemeColor: class { constructor(readonly id: string) {} },
   Range: class { constructor(readonly start: unknown, readonly end: unknown) {} },
   Selection: class { constructor(readonly anchor: unknown, readonly active: unknown) {} },
   OverviewRulerLane: { Center: 2 }, ViewColumn: { One: 1, Beside: 2 }, TextEditorRevealType: { InCenterIfOutsideViewport: 1 },
   env: { language: 'en' }, l10n: { t: (text: string) => text },
-  workspace: { get textDocuments() { return env.documents; } },
+  workspace: {
+    get textDocuments() { return env.documents; },
+    createFileSystemWatcher: () => {
+      const watcher = {
+        create: () => {}, change: () => {}, delete: () => {}, dispose: () => {},
+        onDidCreate: (handler: () => void) => { watcher.create = handler; return { dispose() {} }; },
+        onDidChange: (handler: () => void) => { watcher.change = handler; return { dispose() {} }; },
+        onDidDelete: (handler: () => void) => { watcher.delete = handler; return { dispose() {} }; },
+      };
+      env.watchers.push(watcher);
+      return watcher;
+    },
+    fs: {
+      stat: async (value: { toString(): string }) => {
+        env.statCalls += 1;
+        if (!env.files.has(value.toString())) throw new Error('missing');
+      },
+      readFile: async (value: { toString(): string }) => {
+        const text = env.files.get(value.toString());
+        if (text === undefined) throw new Error('missing');
+        return new TextEncoder().encode(text);
+      },
+    },
+    openTextDocument: async (value: { toString(): string }) => {
+      const found = env.documents.find((document) => document.uri.toString() === value.toString());
+      if (found === undefined) throw new Error('missing');
+      return found;
+    },
+  },
   window: {
     get visibleTextEditors() { return env.editors; },
     createTextEditorDecorationType: () => ({ dispose() {} }),
@@ -80,9 +122,11 @@ function open(doc: Doc) {
   panel.received({ type: 'ready' });
   return panel;
 }
+const flush = async () => { for (let index = 0; index < 10; index += 1) await Promise.resolve(); };
 beforeEach(() => {
   vi.useFakeTimers();
   env.panels = []; env.documents = []; env.editors = []; env.notices = []; env.openEditor = undefined;
+  env.files = new Map(); env.statCalls = 0; env.watchers = [];
   manager = new PreviewPanelManager(uri('file:///extension') as vscode.Uri);
   doc = new Doc();
   env.documents.push(doc);
@@ -211,5 +255,189 @@ describe('宿主快照、上下文与起播往返', () => {
     await Promise.resolve();
     expect(editor.selection).toBeUndefined();
     expect(editor.revealRange).not.toHaveBeenCalled();
+  });
+});
+
+describe('文件生命周期与来源状态', () => {
+  it('[SPEC-LIFE-03] 未保存文档首次保存接续身份，版本与暂停位置沿用最近推送', async () => {
+    const unsaved = new Doc();
+    unsaved.isUntitled = true;
+    unsaved.uri = uri('untitled:1');
+    env.documents.push(unsaved);
+    const panel = open(unsaved);
+    applied(panel);
+    const pushed = last(panel, 'document');
+    // 保存：同一 TextDocument 对象的 URI 原地更新为文件路径
+    unsaved.uri = uri('file:///saved.abc');
+    env.files.set('file:///saved.abc', unsaved.abc);
+    manager.notifyDocumentSaved(asDocument(unsaved));
+    await flush();
+    expect(last(panel, 'playback').action).toBe('pause');
+    expect(last(panel, 'document')).toMatchObject({
+      uri: 'file:///saved.abc', fileName: 'saved.abc', continued: true,
+      version: pushed.version, revision: pushed.revision,
+    });
+    // 换键后常规变更仍能找到该预览（绑定已迁移到新键）
+    unsaved.version += 1;
+    unsaved.abc += '\n% edit';
+    manager.notifyDocumentChanged(asDocument(unsaved));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(last(panel, 'document')).toMatchObject({ uri: 'file:///saved.abc', version: 2 });
+  });
+
+  it('[SPEC-LIFE-03] 重命名携带编辑：换版推送并标记 continued，不当作新文档', async () => {
+    const panel = open(doc);
+    applied(panel);
+    const pushed = last(panel, 'document');
+    doc.version += 1;
+    doc.abc += '\n% edit';
+    doc.uri = uri('file:///moved.abc');
+    env.files.set('file:///moved.abc', doc.abc);
+    manager.notifyFilesRenamed([{ oldUri: uri('file:///book.abc'), newUri: uri('file:///moved.abc') }]);
+    await flush();
+    const message = last(panel, 'document');
+    expect(message).toMatchObject({ uri: 'file:///moved.abc', continued: true, version: 2 });
+    expect(message.revision).toBe(pushed.revision + 1);
+    expect(message.abc).toContain('% edit');
+  });
+
+  it('[SPEC-LIFE-04] 迁移到已绑定路径进入只读迁移页，目标入口按实例指向现有面板', async () => {
+    const other = new Doc('target');
+    env.documents.push(other);
+    const panel = open(doc);
+    applied(panel);
+    const target = open(other);
+    applied(target);
+    manager.notifyFilesRenamed([{ oldUri: uri('file:///book.abc'), newUri: other.uri }]);
+    await flush();
+    expect(last(panel, 'source-state')).toMatchObject({ state: 'migrated', detail: 'target.abc' });
+    expect(last(panel, 'playback').action).toBe('pause');
+    expect(target.sent.filter((message) => message.type === 'playback')).toHaveLength(0);
+    // 只读迁移页不再接受文档变化推送，也不执行旧绑定的播放 / 起播
+    const count = panel.sent.length;
+    doc.version += 1;
+    doc.abc += '\n% orphan';
+    manager.notifyDocumentChanged(asDocument(doc));
+    manager.requestToggle(asDocument(doc));
+    manager.requestPlayFromCursor(asDocument(doc), 1);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(panel.sent).toHaveLength(count);
+    // "打开迁移后的预览"指向实际存在目标面板
+    panel.received({ type: 'reveal-target', viewId: last(panel, 'document').viewId });
+    expect(target.reveal).toHaveBeenCalled();
+  });
+
+  it('[SPEC-LIFE-06] [SPEC-LIFE-07] 无缓冲区删除进入不可用，重现后自动恢复推送归零', async () => {
+    const panel = open(doc);
+    applied(panel);
+    const watcher = env.watchers.at(-1)!;
+    env.documents = env.documents.filter((entry) => entry !== doc);
+    env.files.delete('file:///book.abc');
+    watcher.delete();
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(last(panel, 'source-state')).toMatchObject({ state: 'unavailable', detail: '/book.abc' });
+    expect(last(panel, 'playback').action).toBe('stop');
+    // 文件重现：重新获取并校验内容后归零推送，不自动播放
+    env.documents.push(doc);
+    env.files.set('file:///book.abc', doc.abc);
+    watcher.create();
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(last(panel, 'document')).toMatchObject({ uri: 'file:///book.abc', version: 1 });
+    // 恢复后回到常规推送路径
+    doc.version += 1;
+    doc.abc += '\n% resumed';
+    manager.notifyDocumentChanged(asDocument(doc));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(last(panel, 'document').version).toBe(2);
+  });
+
+  it('[SPEC-LIFE-06] 有缓冲区时磁盘缺失只提示不锁定，磁盘恢复清除提示', async () => {
+    const panel = open(doc);
+    applied(panel);
+    const watcher = env.watchers.at(-1)!;
+    env.files.delete('file:///book.abc');
+    watcher.delete();
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(last(panel, 'source-state')).toMatchObject({ state: 'disk-missing', detail: '/book.abc' });
+    // 不停音、不进入只读：缓冲区继续作为预览来源
+    expect(panel.sent.filter((message) => message.type === 'playback')).toHaveLength(0);
+    env.files.set('file:///book.abc', doc.abc);
+    watcher.change();
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(last(panel, 'source-state')).toMatchObject({ state: 'available' });
+    expect(last(panel, 'document').version).toBe(1);
+  });
+
+  it('[SPEC-LIFE-08] 连续文件事件合并为一次存在性核验，短暂删除不误判丢失', async () => {
+    const panel = open(doc);
+    applied(panel);
+    const watcher = env.watchers.at(-1)!;
+    env.documents = [];
+    env.statCalls = 0;
+    // 原子替换：短暂删除后立即重建，全部在防抖窗口内
+    watcher.delete();
+    watcher.create();
+    env.files.set('file:///book.abc', doc.abc);
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(env.statCalls).toBe(1);
+    expect(panel.sent.filter((message) => message.type === 'source-state')).toHaveLength(0);
+  });
+
+  it('[SPEC-LIFE-05] 文件另存为不迁移绑定，原预览按原文件内容更新', async () => {
+    const panel = open(doc);
+    applied(panel);
+    const pushed = last(panel, 'document');
+    doc.uri = uri('file:///copy.abc');
+    env.files.set('file:///copy.abc', doc.abc);
+    const original = new Doc();
+    original.version = 2;
+    original.abc += '\n% disk';
+    env.documents.push(original);
+    manager.notifyDocumentSaved(asDocument(doc));
+    await flush();
+    const message = last(panel, 'document');
+    expect(message).toMatchObject({ uri: 'file:///book.abc', version: 2 });
+    expect(message.continued).toBeUndefined();
+    expect(message.revision).toBe(pushed.revision + 1);
+  });
+
+  it('[SPEC-LIFE-06] 未保存文档真正关闭进入来源不可用（来源对象已不存在）', () => {
+    const unsaved = new Doc();
+    unsaved.isUntitled = true;
+    unsaved.uri = uri('untitled:1');
+    env.documents.push(unsaved);
+    const panel = open(unsaved);
+    applied(panel);
+    manager.notifyDocumentClosed(asDocument(unsaved));
+    expect(last(panel, 'source-state')).toMatchObject({ state: 'unavailable', detail: '1' });
+    expect(last(panel, 'playback').action).toBe('stop');
+  });
+
+  it('[SPEC-LIFE-07] 不可用后重新打开预览解除只读并按当前内容推送', async () => {
+    const panel = open(doc);
+    applied(panel);
+    env.documents = [];
+    env.files.delete('file:///book.abc');
+    env.watchers.at(-1)!.delete();
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(last(panel, 'source-state').state).toBe('unavailable');
+    env.documents.push(doc);
+    env.files.set('file:///book.abc', doc.abc);
+    manager.createOrShow(asDocument(doc));
+    await flush();
+    expect(panel.reveal).toHaveBeenCalled();
+    expect(last(panel, 'document')).toMatchObject({ uri: 'file:///book.abc' });
+    // 恢复后可继续接受常规更新
+    doc.version += 1;
+    doc.abc += '\n% again';
+    manager.notifyDocumentChanged(asDocument(doc));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(last(panel, 'document').version).toBe(2);
   });
 });

@@ -14,6 +14,8 @@ export class TunePicker {
   private selected: number | null = null;
   private candidate = 0;
   private revision = 0;
+  /** 只读来源状态（SPEC-LIFE-04 / 06）：锁定切曲交互，旧谱仅供参考时不可切换曲目。 */
+  private locked = false;
 
   constructor(private readonly root: HTMLElement, private readonly confirm: HTMLButtonElement, private readonly choose: (index: number) => void) {
     this.trigger.type = 'button';
@@ -60,6 +62,8 @@ export class TunePicker {
     this.selected = selected;
     this.root.hidden = catalog.tunes.length <= 1;
     this.confirm.hidden = catalog.tunes.length !== 1 || selected !== null || !catalog.tunes[0].reliable;
+    this.trigger.disabled = this.locked;
+    this.confirm.disabled = this.locked;
     this.confirm.textContent = t('confirm-tune');
     const label = selected === null ? t('choose-tune') : tuneLabel(catalog, selected);
     this.trigger.textContent = label;
@@ -90,6 +94,14 @@ export class TunePicker {
     this.list.hidden = true;
     this.trigger.setAttribute('aria-expanded', 'false');
     if (wasOpen && restoreFocus) this.trigger.focus();
+  }
+
+  /** 只读来源状态锁定（SPEC-LIFE-04 / 06）：禁止打开列表与提交；恢复后解锁。 */
+  setLocked(locked: boolean): void {
+    this.locked = locked;
+    this.trigger.disabled = locked;
+    this.confirm.disabled = locked;
+    if (locked) this.close(false);
   }
 
   private open(): void {

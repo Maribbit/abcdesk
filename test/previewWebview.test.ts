@@ -312,3 +312,61 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(state.controller!.getProgress().positionMs).toBe(position);
   });
 });
+
+describe('来源状态与可靠迁移', () => {
+  it('[SPEC-LIFE-04] 迁移状态锁定播放与切曲，旧谱标注参考并提供目标入口', () => {
+    send(snapshot());
+    send({ type: 'source-state', viewId: 1, state: 'migrated', detail: 'moved.abc' });
+    expect(element('content-status').textContent).toContain('This file was moved to moved.abc.');
+    expect(element('content-status').textContent).toContain('reference only');
+    expect(element<HTMLButtonElement>('play').disabled).toBe(true);
+    expect(element<HTMLButtonElement>('play-from-here').disabled).toBe(true);
+    expect(element('tunes').querySelector('button')!.disabled).toBe(true);
+    expect(element('reveal-target').hidden).toBe(false);
+    expect(element('reveal-source').hidden).toBe(true);
+    // 其他实例的状态不影响本预览
+    const before = element('content-status').textContent;
+    send({ type: 'source-state', viewId: 9, state: 'available', detail: '' });
+    expect(element('content-status').textContent).toBe(before);
+    // 入口只回传实例编号，由宿主决定目标面板
+    element<HTMLButtonElement>('reveal-target').click();
+    expect(last('reveal-target').viewId).toBe(1);
+  });
+
+  it('[SPEC-LIFE-06] [SPEC-LIFE-07] 来源不可用锁定交互，恢复推送后解锁并按新内容归零', () => {
+    send(snapshot());
+    send({ type: 'source-state', viewId: 1, state: 'unavailable', detail: '/book.abc' });
+    expect(element('content-status').textContent).toContain('The source file is unavailable: /book.abc.');
+    expect(element<HTMLButtonElement>('play').disabled).toBe(true);
+    send({ type: 'cursor', context: context(), offset: book.indexOf('CDEF') });
+    expect(sent.filter((message) => message.type === 'target-ranges')).toHaveLength(0);
+    // 宿主推送文档即视为来源恢复：解锁并强制按新版本重渲染
+    send(snapshot(`${book}\n% resumed`, 2));
+    expect(element<HTMLButtonElement>('play').disabled).toBe(false);
+    expect(last('rendered').ok).toBe(true);
+    expect(last('rendered').context.version).toBe(2);
+  });
+
+  it('[SPEC-LIFE-03] 可靠迁移只更新身份并保留设置与位置，不重渲染', () => {
+    send(snapshot());
+    state.controller!.setSpeed(70);
+    state.controller!.seekToFraction(0.5);
+    const before = context();
+    const position = state.controller!.getProgress().positionMs;
+    const renders = sent.filter((message) => message.type === 'rendered').length;
+    send({ ...snapshot(), uri: 'file:///moved.abc', fileName: 'moved.abc', continued: true });
+    expect(context()).toEqual(before);
+    expect(state.controller!.getSpeed()).toBe(70);
+    expect(state.controller!.getProgress().positionMs).toBe(position);
+    expect(sent.filter((message) => message.type === 'rendered')).toHaveLength(renders);
+  });
+
+  it('[SPEC-LIFE-06] 磁盘缺失提示不锁定播放，清除后提示消失', () => {
+    send(snapshot());
+    send({ type: 'source-state', viewId: 1, state: 'disk-missing', detail: '/book.abc' });
+    expect(element('content-status').textContent).toContain('The file is missing on disk (/book.abc); showing the open editor content.');
+    expect(element<HTMLButtonElement>('play').disabled).toBe(false);
+    send({ type: 'source-state', viewId: 1, state: 'available', detail: '' });
+    expect(element('content-status').textContent).not.toContain('/book.abc');
+  });
+});

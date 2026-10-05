@@ -1,5 +1,5 @@
 import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from 'abcjs';
-import { parseHostMessage, sameContext, type DocumentMessage, type SourceHighlightRange, type PreviewContext, type WebviewMessage, type LinkageUnavailableReason } from '../core/messages';
+import { parseHostMessage, sameContext, type DocumentMessage, type SourceStateMessage, type SourceHighlightRange, type PreviewContext, type WebviewMessage, type LinkageUnavailableReason } from '../core/messages';
 import { TuneSession, sameSnapshot } from '../core/tuneSession';
 import { tuneAtSource } from '../core/tunes';
 import { toSourceRange, type MappedText } from '../core/sourceMap';
@@ -57,6 +57,7 @@ const playbackStatusElement = queryElement('playback-status');
 const contentStatusElement = queryElement('content-status');
 const contentStatusTextElement = queryElement('content-status-text');
 const revealSourceButton = queryElement<HTMLButtonElement>('reveal-source');
+const revealTargetButton = queryElement<HTMLButtonElement>('reveal-target');
 const followResumeButton = queryElement<HTMLButtonElement>('follow-resume');
 const playFromHereWrap = queryElement('play-from-here-wrap');
 const playFromHereButton = queryElement<HTMLButtonElement>('play-from-here');
@@ -102,6 +103,12 @@ const tunePicker = new TunePicker(queryElement('tunes'), queryElement<HTMLButton
 let contentStatusKey: string | null = null;
 /** 空状态是否显示"转到源码编辑"入口（SPEC-STATE-05）。 */
 let showRevealSource = false;
+/** 来源状态（SPEC-LIFE-04 / 06 / 07）：迁移 / 不可用页只读参考，磁盘缺失仅提示，不改变可播放性。 */
+let sourceState: SourceStateMessage['state'] = 'available';
+/** 来源状态的展示文本（迁移目标名 / 原路径）。 */
+let sourceDetail = '';
+/** 来源状态消息携带的实例编号：只读页在无文档上下文时用于"打开迁移后的预览"入口。 */
+let sourceStateViewId = 0;
 /** 谱面区是否已有成功渲染的谱面：渲染失败时据此决定保留参考还是错误占位（SPEC-STATE-03）。 */
 let hasRenderedScore = false;
 /** 当前版本的演奏时序（SPEC-PLAY-11 / 12）：字符↔音符↔元素映射的唯一依据，随渲染重建。 */
@@ -243,13 +250,13 @@ function updateVoicesUi(): void {
     rebuildVoicesList(voices, hasChords);
   }
   for (let index = 0; index < voiceInputs.length; index += 1) {
-    // 勾选＝发声、未勾选即静音（SPEC-PLAY-06 发声开关）：默认全选＝按乐谱全部声部播放
+    // 勾选＝发声、未勾选即静音（SPEC-PLAY-06 发声开关）：默认全选＝按乐谱全部声部播放；只读来源页不可调
     voiceInputs[index].checked = !(voices[index]?.muted ?? false);
-    voiceInputs[index].disabled = playing;
+    voiceInputs[index].disabled = playing || isReadOnlySource();
   }
   if (chordsInput !== undefined) {
     chordsInput.checked = !controller.getChordsMuted();
-    chordsInput.disabled = playing;
+    chordsInput.disabled = playing || isReadOnlySource();
   }
   voicesMenuElement.hidden = voices.length === 0 && !hasChords;
   voicesPauseButton.hidden = !playing;
@@ -430,6 +437,7 @@ function renderAndReport(message: DocumentMessage, applied = false): void {
 }
 
 function chooseTune(index: number): void {
+  if (isReadOnlySource()) return; // 只读来源页不接受切曲（SPEC-LIFE-04 / 06）
   rememberSettings();
   const request = session.beginSelection(index);
   if (request === undefined || currentDocument === undefined) return;
@@ -467,19 +475,74 @@ function playbackAction(action: 'toggle' | 'pause' | 'stop'): void {
   if (playable && targetOffset !== null) applyReadingMarker(targetOffset);
 }
 
-/** 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 暂停后应用提示与"转到源码编辑"入口。 */
+/** 内容状态区（SPEC-STATE-08 / LIFE-04 / 06）：来源状态 / 旧谱参考 / 空状态 / 暂停后应用提示与入口。 */
 function updateContentStatus(): void {
-  const warnings = [contentStatusKey === null ? '' : t(contentStatusKey), contentDetail];
+  const warnings: string[] = [];
+  if (sourceState === 'migrated') warnings.push(t('source-migrated').replace('{0}', sourceDetail));
+  else if (sourceState === 'unavailable') warnings.push(t('source-unavailable').replace('{0}', sourceDetail));
+  else if (sourceState === 'disk-missing') warnings.push(t('source-disk-missing').replace('{0}', sourceDetail));
+  // 只读来源页的旧谱仅作参考（SPEC-LIFE-04 / 06）：补一句明确的参考说明
+  if (isReadOnlySource() && hasRenderedScore) warnings.push(t('stale-score'));
+  if (contentStatusKey !== null) warnings.push(t(contentStatusKey));
+  if (contentDetail) warnings.push(contentDetail);
   if (session.catalog.issues.length > 0 && contentStatusKey !== 'structure-unreliable') warnings.push(t('structure-unreliable'));
   contentStatusTextElement.textContent = warnings.filter(Boolean).join(' ');
-  contentStatusElement.hidden = contentStatusTextElement.textContent === '' && !showRevealSource;
+  const revealTarget = sourceState === 'migrated';
+  contentStatusElement.hidden = contentStatusTextElement.textContent === '' && !showRevealSource && !revealTarget;
   revealSourceButton.hidden = !showRevealSource;
   if (showRevealSource) {
     revealSourceButton.textContent = t('reveal-source');
     revealSourceButton.setAttribute('aria-label', t('reveal-source'));
   }
+  revealTargetButton.hidden = !revealTarget;
+  if (revealTarget) {
+    revealTargetButton.textContent = t('open-migrated');
+    revealTargetButton.setAttribute('aria-label', t('open-migrated'));
+  }
   // 内容状态变化同时影响"从此处播放"可用性（待更新 / 旧谱参考，SPEC-PLAY-12）
   updatePlayFromHereButton();
+}
+
+/** 只读来源状态（SPEC-LIFE-04 / 06）：迁移状态页与来源不可用页，旧谱仅作参考。 */
+function isReadOnlySource(): boolean {
+  return sourceState === 'migrated' || sourceState === 'unavailable';
+}
+
+/**
+ * 来源状态应用（SPEC-LIFE-04 / 06 / 07）：
+ * - migrated / unavailable：只读参考页——停用播放、定位、设置修改与切曲，旧谱保留展示；
+ * - disk-missing：磁盘缺失提示，可播放性不变；available：清除提示。
+ */
+function applySourceState(state: SourceStateMessage['state'], detail: string): void {
+  sourceState = state;
+  sourceDetail = detail;
+  if (!isReadOnlySource()) {
+    updateContentStatus();
+    return;
+  }
+  pendingDocument = undefined;
+  session.cancelSelection();
+  playable = false;
+  activeInput = undefined;
+  applyTarget(null);
+  setMarkerClass(playingElements, 'abcdesk-playing', false);
+  playingElements = [];
+  followPaused = false;
+  contentStatusKey = null;
+  contentDetail = '';
+  showRevealSource = false;
+  controller.setTune(undefined);
+  tunePicker.setLocked(true);
+  updateContentStatus();
+  refreshPlaybackUi();
+}
+
+/** 来源恢复（SPEC-LIFE-07）：宿主明确推送文档即解除只读锁定，回到常规应用路径。 */
+function releaseSourceLock(): void {
+  if (!isReadOnlySource()) return;
+  sourceState = 'available';
+  sourceDetail = '';
+  tunePicker.setLocked(false);
 }
 
 /** 空状态：清空谱面、提示"文件尚无音乐内容"并提供"转到源码编辑"入口（SPEC-STATE-05）。 */
@@ -627,8 +690,9 @@ function syncTargetSourceRanges(ranges: SourceHighlightRange[]): void {
   post({ type: 'target-ranges', ranges });
 }
 
-/** 联动是否处于停用窗口（SPEC-PLAY-11）：有待应用的新版本或当前为旧谱参考时不可定位 / 起播。 */
+/** 联动是否处于停用窗口（SPEC-PLAY-11）：有待应用的新版本或当前为旧谱参考时不可定位 / 起播；只读来源页同样不可用。 */
 function linkageUnavailableReason(): LinkageUnavailableReason | undefined {
+  if (isReadOnlySource()) return 'stale-score';
   if (pendingDocument !== undefined || session.selectionRequest !== undefined) return 'update-pending';
   if (session.selected === null) return session.catalog.initialBlocked ? 'structure-unreliable' : 'choose-tune';
   if (!session.current?.reliable) return 'structure-unreliable';
@@ -670,8 +734,9 @@ function playFromOffset(offset: number): void {
   controller.playFromMs(event.milliseconds);
 }
 
-/** 从源码光标起播（SPEC-PLAY-12）：偏移来自宿主推送，映射在 webview 内完成。 */
+/** 从源码光标起播（SPEC-PLAY-12）：偏移来自宿主推送，映射在 webview 内完成；只读来源页不接受起播。 */
 function startFromCursor(offset: number): void {
+  if (isReadOnlySource()) { post({ type: 'linkage-unavailable', reason: 'stale-score' }); return; }
   if (pendingDocument !== undefined) { post({ type: 'linkage-unavailable', reason: 'update-pending' }); return; }
   const candidate = tuneAtSource(session.catalog, offset);
   if (candidate === undefined || !validateSourceTarget(candidate, offset)) {
@@ -947,26 +1012,58 @@ function updatePlayFromHereButton(): void {
   }
 }
 
+/**
+ * 宿主文档推送（SPEC-STATE-07 / LIFE-03 / 07）：
+ * - 只读状态页收到文档推送视为来源恢复：先解除只读锁定，再按常规规则应用；
+ * - continued（可靠迁移）：同内容只更新来源标识并保留位置、设置与映射；
+ *   内容变化先对齐同一练习身份，再按常规换版规则应用；
+ * - 其余按既有规则：旧版 / 跨文档丢弃、同快照只回报、播放中缓存待应用。
+ */
+function handleDocumentMessage(message: DocumentMessage): void {
+  const readOnly = isReadOnlySource();
+  if (currentDocument !== undefined && message.viewId !== currentDocument.viewId) return;
+  const migrating = !readOnly && currentDocument !== undefined && message.continued === true;
+  if (!readOnly && !migrating && currentDocument !== undefined &&
+      (message.uri !== currentDocument.uri || message.revision < (pendingDocument ?? currentDocument).revision)) return;
+  if (readOnly) releaseSourceLock();
+  if (migrating && currentDocument !== undefined) {
+    session.rekey(message.uri);
+    if (pendingDocument !== undefined) pendingDocument = { ...pendingDocument, uri: message.uri };
+    if (pendingDocument === undefined && session.selectionRequest === undefined && message.abc === currentDocument.abc) {
+      // 内容未变：保留暂停位置、设置与映射，只更新来源标识（SPEC-LIFE-03）
+      currentDocument = { ...currentDocument, uri: message.uri, fileName: message.fileName, isUntitled: message.isUntitled };
+      return;
+    }
+  }
+  if (!readOnly && sameSnapshot(session.snapshot, message)) {
+    if (session.selectionRequest === undefined) reportRendered();
+    return;
+  }
+  const phase = controller.getStatus().phase;
+  if (phase === 'playing' || phase === 'preparing' || session.selectionRequest !== undefined) {
+    pendingDocument = message;
+    session.receive(message, true);
+    contentStatusKey = session.selectionRequest === undefined ? 'update-pending' : 'switching-tune';
+    showRevealSource = false;
+    applyTarget(null);
+    updateContentStatus();
+    return;
+  }
+  renderAndReport(message);
+}
+
 window.addEventListener('message', (event: MessageEvent) => {
   const message = parseHostMessage(event.data);
   if (message === undefined) return;
   if (message.type === 'document') {
-    if (currentDocument !== undefined && (message.viewId !== currentDocument.viewId || message.uri !== currentDocument.uri || message.revision < (pendingDocument ?? currentDocument).revision)) return;
-    if (sameSnapshot(session.snapshot, message)) {
-      if (session.selectionRequest === undefined) reportRendered();
-      return;
-    }
-    const phase = controller.getStatus().phase;
-    if (phase === 'playing' || phase === 'preparing' || session.selectionRequest !== undefined) {
-      pendingDocument = message;
-      session.receive(message, true);
-      contentStatusKey = session.selectionRequest === undefined ? 'update-pending' : 'switching-tune';
-      showRevealSource = false;
-      applyTarget(null);
-      updateContentStatus();
-      return;
-    }
-    renderAndReport(message);
+    handleDocumentMessage(message);
+    return;
+  }
+  if (message.type === 'source-state') {
+    const expected = currentDocument?.viewId ?? context?.viewId;
+    if (expected !== undefined && message.viewId !== expected) return;
+    sourceStateViewId = message.viewId;
+    applySourceState(message.state, message.detail);
     return;
   }
   if (message.type === 'selection-snapshot') {
@@ -1007,6 +1104,8 @@ playFromHereButton.addEventListener('click', () => {
 });
 // 空状态"转到源码编辑"入口（SPEC-STATE-05）：请求宿主打开来源文档并转移焦点
 revealSourceButton.addEventListener('click', () => { if (context !== undefined) host.postMessage({ type: 'reveal-source', viewId: context.viewId }); });
+// 迁移状态页"打开迁移后的预览"入口（SPEC-LIFE-04）：目标由宿主记录决定，webview 只发实例编号
+revealTargetButton.addEventListener('click', () => { host.postMessage({ type: 'reveal-target', viewId: context?.viewId ?? sourceStateViewId }); });
 // “恢复跟随”（SPEC-PLAY-11）：立即回到当前播放位置并恢复自动跟随
 followResumeButton.addEventListener('click', () => {
   followPaused = false;

@@ -108,3 +108,20 @@ describe('双向消息白名单', () => {
     expect(parseWebviewMessage({ type: 'context-invalidated', context, cancelRequests: 'true' })).toBeUndefined();
   });
 });
+
+describe('文件生命周期消息', () => {
+  it('[SPEC-LIFE-03] [SPEC-LIFE-04] 迁移标记、来源状态与目标入口形状校验', () => {
+    expect(parseHostMessage({ ...document, continued: true })).toEqual({ ...document, continued: true });
+    expect(parseHostMessage({ ...document, continued: 'yes' })).toBeUndefined();
+    for (const state of ['migrated', 'unavailable', 'disk-missing', 'available']) {
+      expect(parseHostMessage({ type: 'source-state', viewId: 2, state, detail: 'x' }))
+        .toEqual({ type: 'source-state', viewId: 2, state, detail: 'x' });
+    }
+    expect(parseHostMessage({ type: 'source-state', viewId: 2, state: 'gone', detail: '' })).toBeUndefined();
+    expect(parseHostMessage({ type: 'source-state', viewId: 2, state: 'available', detail: 3 })).toBeUndefined();
+    expect(parseHostMessage({ type: 'source-state', state: 'available', detail: '' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'reveal-target', viewId: 2, uri: 'ignored' })).toEqual({ type: 'reveal-target', viewId: 2 });
+    expect(parseWebviewMessage({ type: 'reveal-target' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'reveal-target', viewId: -1 })).toBeUndefined();
+  });
+});

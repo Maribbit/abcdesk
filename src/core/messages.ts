@@ -11,6 +11,8 @@ export interface WebviewReadyMessage { type: 'ready' }
 export interface WebviewRenderedMessage { type: 'rendered'; context: PreviewContext; ok: boolean; linkable: boolean }
 export interface WebviewPlaybackStateMessage { type: 'playback-state'; context: PreviewContext; state: 'idle' | 'preparing' | 'playing' | 'paused' }
 export interface WebviewRevealSourceMessage { type: 'reveal-source'; viewId: number }
+/** 迁移状态页"打开目标预览"入口（SPEC-LIFE-04）：只带实例编号，目标路径由宿主内部记录决定。 */
+export interface WebviewRevealTargetMessage { type: 'reveal-target'; viewId: number }
 export interface WebviewRevealRangeMessage { type: 'reveal-range'; context: PreviewContext; requestId: number; start: number; end: number }
 export interface WebviewLinkageUnavailableMessage { type: 'linkage-unavailable'; context: PreviewContext; reason: LinkageUnavailableReason }
 export interface WebviewSourceHighlightMessage { type: 'source-highlight'; context: PreviewContext; ranges: SourceHighlightRange[] }
@@ -19,7 +21,7 @@ export interface WebviewPlayFromSelectionRequestMessage { type: 'play-from-selec
 export interface WebviewContextInvalidatedMessage { type: 'context-invalidated'; context: PreviewContext; cancelRequests?: boolean }
 export interface WebviewSelectTuneMessage { type: 'select-tune'; context: PreviewContext; requestId: number }
 export type WebviewMessage = WebviewReadyMessage | WebviewRenderedMessage | WebviewPlaybackStateMessage |
-  WebviewRevealSourceMessage | WebviewRevealRangeMessage | WebviewLinkageUnavailableMessage |
+  WebviewRevealSourceMessage | WebviewRevealTargetMessage | WebviewRevealRangeMessage | WebviewLinkageUnavailableMessage |
   WebviewSourceHighlightMessage | WebviewTargetRangesMessage | WebviewPlayFromSelectionRequestMessage |
   WebviewContextInvalidatedMessage | WebviewSelectTuneMessage;
 
@@ -32,8 +34,18 @@ export interface DocumentMessage {
   version: number;
   viewId: number;
   revision: number;
+  /** 可靠迁移（SPEC-LIFE-03）：uri 已变化但属于同一练习，保留会话设置、选曲身份与暂停位置。 */
+  continued?: boolean;
   /** 首次源码意图优先于默认第一首；编号属于宿主操作序列。 */
   initialRequest?: { requestId: number; offset: number };
+}
+/** 来源状态页（SPEC-LIFE-04 / 06 / 07）：迁移 / 不可用 / 磁盘缺失提示与恢复清除，不带文件操作路径。 */
+export interface SourceStateMessage {
+  type: 'source-state';
+  viewId: number;
+  state: 'migrated' | 'unavailable' | 'disk-missing' | 'available';
+  /** 展示用说明（迁移目标名 / 原路径）；'available' 时为空串。 */
+  detail: string;
 }
 export type PlaybackMessage = { type: 'playback'; viewId: number; requestId: number } & (
   { action: 'toggle'; context: PreviewContext } | { action: 'pause' | 'stop' }
@@ -42,7 +54,7 @@ export interface CursorMessage { type: 'cursor'; context: PreviewContext; offset
 export interface PlayFromCursorMessage { type: 'play-from-cursor'; context: PreviewContext; requestId: number; offset: number }
 export interface PlayFromSelectionMessage { type: 'play-from-selection'; context: PreviewContext; requestId: number; targetRequestId?: number }
 export interface SelectionSnapshotMessage { type: 'selection-snapshot'; viewId: number; requestId: number; document: DocumentMessage }
-export type HostMessage = DocumentMessage | PlaybackMessage | CursorMessage | PlayFromCursorMessage | PlayFromSelectionMessage | SelectionSnapshotMessage;
+export type HostMessage = DocumentMessage | PlaybackMessage | CursorMessage | PlayFromCursorMessage | PlayFromSelectionMessage | SelectionSnapshotMessage | SourceStateMessage;
 
 export function sameContext(first: PreviewContext | undefined, second: PreviewContext): boolean {
   return first?.viewId === second.viewId && first.revision === second.revision && first.version === second.version && first.selection === second.selection;
@@ -75,6 +87,7 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
   if (message === undefined) return undefined;
   if (message.type === 'ready') return { type: 'ready' };
   if (message.type === 'reveal-source' && isSequence(message.viewId)) return { type: 'reveal-source', viewId: message.viewId };
+  if (message.type === 'reveal-target' && isSequence(message.viewId)) return { type: 'reveal-target', viewId: message.viewId };
   const context = parseContext(message.context);
   if (context === undefined) return undefined;
   switch (message.type) {
@@ -105,12 +118,21 @@ export function parseHostMessage(value: unknown): HostMessage | undefined {
   if (message.type === 'document') {
     if (typeof message.uri !== 'string' || typeof message.fileName !== 'string' || typeof message.abc !== 'string' || typeof message.isUntitled !== 'boolean' || !isSequence(message.version) || !isSequence(message.viewId) || !isSequence(message.revision)) return undefined;
     const result: DocumentMessage = { type: 'document', uri: message.uri, fileName: message.fileName, abc: message.abc, isUntitled: message.isUntitled, version: message.version, viewId: message.viewId, revision: message.revision };
+    if (message.continued !== undefined) {
+      if (typeof message.continued !== 'boolean') return undefined;
+      result.continued = message.continued;
+    }
     if (message.initialRequest !== undefined) {
       const request = object(message.initialRequest);
       if (request === undefined || !isSequence(request.requestId) || !isSequence(request.offset) || request.offset > result.abc.length) return undefined;
       result.initialRequest = { requestId: request.requestId, offset: request.offset };
     }
     return result;
+  }
+  if (message.type === 'source-state') {
+    if (!isSequence(message.viewId) || typeof message.detail !== 'string') return undefined;
+    if (message.state !== 'migrated' && message.state !== 'unavailable' && message.state !== 'disk-missing' && message.state !== 'available') return undefined;
+    return { type: 'source-state', viewId: message.viewId, state: message.state, detail: message.detail };
   }
   if (message.type === 'selection-snapshot') {
     if (object(message.document)?.type !== 'document') return undefined;

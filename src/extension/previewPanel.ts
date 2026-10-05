@@ -10,6 +10,7 @@ import {
   type PlaybackMessage,
   type PlayFromCursorMessage,
   type SourceHighlightRange,
+  type SourceStateMessage,
   type WebviewPlaybackStateMessage,
   type WebviewRenderedMessage,
   type WebviewRevealRangeMessage,
@@ -27,6 +28,17 @@ import {
  * - 点击谱面音符的源码定位只设选区与滚动、不抢焦点，编辑器侧以专用轮廓标记呈现当前目标音符的源码区间（随目标同步、与原生选区 / 同文高亮双重区分）；播放高亮只对可见编辑器设装饰（SPEC-PLAY-11）；
  * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
  * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点，来源标签关闭后按 URI 重新打开（SPEC-STATE-05 / CMD-12）。
+ *
+ * 文件生命周期（SPEC-LIFE-02 ~ 08）：
+ * - 可靠重命名 / 移动（onDidRenameFiles 对）与未保存文档首次保存（同一 TextDocument 对象 URI 原地更新）
+ *   接续原预览：先暂停并取消待起播与未提交更新，再重新核验内容——内容与版本未变时只更新身份
+ *   （保留暂停位置、设置与映射），变化或从只读恢复时按常规换版推送并归零；
+ * - 迁移目标已有面板时目标优先（SPEC-LIFE-04）：来源面板保留为只读"文件已迁移"状态页
+ *   （只提供目标预览入口），不自动打开目标、不续播、不抢焦点；
+ * - 绑定文件经专用 FileSystemWatcher 观察 create / change / delete（SPEC-LIFE-08）：
+ *   统一防抖 + 存在性复核 + 世代序号作废过期核验，短暂删除再创建不误判、乱序不误伤；
+ * - 无可用编辑器缓冲区的删除 / 放弃转入来源不可用（SPEC-LIFE-06）：停音、只读参考、
+ *   重新可读后重新获取并归零（SPEC-LIFE-07）；有缓冲区时只提示磁盘状态并继续按缓冲区预览。
  *
  * 键盘可视化（SPEC-PLAY-08 / 09）与播放控件（速度 / 进度 / 声部，SPEC-PLAY-04 / 05 / 06）
  * 均在 webview 内实现：宿主只提供 DOM 骨架与样式，界面状态不新增消息
@@ -70,10 +82,19 @@ interface PanelEntry {
   lastTargetRequest: number;
   context: PreviewContext | undefined;
   phase: WebviewPlaybackStateMessage['state'];
+  /** 来源状态（SPEC-LIFE-04 / 06）：迁移状态页 / 来源不可用 / 磁盘缺失提示；未标记即正常绑定。 */
+  sourceState: 'migrated' | 'unavailable' | 'disk-missing' | undefined;
+  /** 迁移目标 URI（SPEC-LIFE-04）：状态页"打开目标预览"入口的目标，不接受 webview 提供的路径。 */
+  migratedTo: string | undefined;
+  /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立，改键 / 关闭时重建或释放。 */
+  watcher: vscode.FileSystemWatcher | undefined;
 }
 
 /** 文档更新推送防抖（毫秒）：连续输入只在稳定后推送一次最新版本。 */
 const UPDATE_DEBOUNCE_MS = 300;
+
+/** 文件事件核验防抖（毫秒，SPEC-LIFE-08 实测记录）：短暂删除再创建 / 原子替换合并为一次存在性复核。 */
+const SOURCE_CHECK_DEBOUNCE_MS = 300;
 
 export class PreviewPanelManager implements vscode.Disposable {
   private readonly panels = new Map<string, PanelEntry>();
@@ -81,6 +102,9 @@ export class PreviewPanelManager implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   /** 各文档待推送的防抖计时器（按 URI 键控）。 */
   private readonly updateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 各绑定文件的核验计时器与世代序号（SPEC-LIFE-08）：乱序到达的过期核验按世代作废。 */
+  private readonly sourceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly sourceGenerations = new Map<string, number>();
   /** 源码播放高亮装饰（SPEC-PLAY-11）：只对可见编辑器设置，不滚动、不移动光标。 */
   private readonly sourceHighlight = vscode.window.createTextEditorDecorationType({
     backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
@@ -111,6 +135,8 @@ export class PreviewPanelManager implements vscode.Disposable {
     const entry = this.panels.get(document.uri.toString());
     if (entry !== undefined) {
       entry.panel.reveal();
+      // 显式重新预览（SPEC-LIFE-07）：清除只读来源状态，恢复可播放绑定
+      this.resumeBinding(entry);
       this.pushDocument(entry, document);
       return;
     }
@@ -125,6 +151,8 @@ export class PreviewPanelManager implements vscode.Disposable {
       this.createPanel(document, { kind: 'toggle' });
       return;
     }
+    // 只读来源状态（SPEC-LIFE-04 / 06）：不执行旧绑定的播放；webview 侧按钮禁用为兜底
+    if (this.isReadOnlyEntry(entry)) return;
     if (!entry.panel.visible) {
       // 隐藏时明确起播须先显示对应预览，不提供隐藏面板后台发声（SPEC-CMD-07）
       entry.panel.reveal(undefined, true);
@@ -148,9 +176,12 @@ export class PreviewPanelManager implements vscode.Disposable {
       this.createPanel(document, request);
       return;
     }
+    // 只读来源状态（SPEC-LIFE-04 / 06）：不执行旧绑定的起播，也不推送旧正文（避免误解除只读）
+    if (this.isReadOnlyEntry(entry)) return;
     if (!entry.panel.visible) entry.panel.reveal(undefined, true);
     this.flushDocumentUpdate(entry);
-    if (entry.version !== document.version) this.pushDocument(entry, document);
+    // 内容以最近一次推送为准（entry.version 是推送簿记；重开对象可能带来不同版本号）
+    if (entry.lastPushedAbc !== document.getText()) this.pushDocument(entry, document);
     if ((entry.phase === 'playing' || entry.phase === 'preparing') && entry.appliedRevision !== entry.revision) {
       entry.pendingRequest = undefined;
       this.showLinkageUnavailable('update-pending');
@@ -263,22 +294,20 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.postPlayback(entry, 'stop');
   }
 
-  /** 当前处于前台的预览所绑定的文档；预览在前台时作为控制命令的活动目标（SPEC-CMD-04）。 */
+  /** 当前处于前台的预览所绑定的文档；预览在前台时作为控制命令的活动目标（SPEC-CMD-04）：只读状态页不参与。 */
   activeDocument(): vscode.TextDocument | undefined {
     for (const entry of this.panels.values()) {
-      if (entry.panel.active) {
-        return vscode.workspace.textDocuments.find(
-          (document) => document.uri.toString() === entry.uri,
-        );
+      if (entry.panel.active && !this.isReadOnlyEntry(entry)) {
+        return this.findDocument(entry.uri);
       }
     }
     return undefined;
   }
 
-  /** 前台预览的绑定 URI（SPEC-CMD-04 / CMD-12）：绑定不因来源标签关闭而失效（SPEC-LIFE-05），供"转到源码编辑"按 URI 重新打开。 */
+  /** 前台预览的绑定 URI（SPEC-CMD-04 / CMD-12）：绑定不因来源标签关闭而失效（SPEC-LIFE-05），供"转到源码编辑"按 URI 重新打开；只读状态页不参与。 */
   activeBoundUri(): string | undefined {
     for (const entry of this.panels.values()) {
-      if (entry.panel.active) {
+      if (entry.panel.active && !this.isReadOnlyEntry(entry)) {
         return entry.uri;
       }
     }
@@ -296,11 +325,11 @@ export class PreviewPanelManager implements vscode.Disposable {
     return entry !== undefined && (entry.pendingChange !== undefined || entry.appliedRevision !== entry.revision);
   }
 
-  /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）；连续变化防抖，只推送稳定后的最新版本。 */
+  /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）；连续变化防抖，只推送稳定后的最新版本；只读状态页不接受更新。 */
   notifyDocumentChanged(document: vscode.TextDocument): void {
     const uri = document.uri.toString();
     const entry = this.panels.get(uri);
-    if (entry === undefined) {
+    if (entry === undefined || this.isReadOnlyEntry(entry)) {
       return;
     }
     // 从发现内容变化起立即停用源码联动（SPEC-PLAY-11）：清除播放高亮、丢弃旧映射定位依据
@@ -322,6 +351,55 @@ export class PreviewPanelManager implements vscode.Disposable {
     );
   }
 
+  /**
+   * 可靠重命名 / 移动（SPEC-LIFE-03 / 04）：onDidRenameFiles 的旧 → 新对是唯一可确认的迁移依据；
+   * 目标无冲突时接续原预览（先暂停、再重新核验内容），冲突时来源保留为只读"文件已迁移"状态页。
+   */
+  notifyFilesRenamed(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): void {
+    for (const file of files) {
+      const oldKey = file.oldUri.toString();
+      const newKey = file.newUri.toString();
+      if (oldKey === newKey) continue;
+      // 迁移状态页的目标入口随目标改键，保证"打开迁移后的预览"仍指向实际文件
+      for (const other of this.panels.values()) {
+        if (other.migratedTo === oldKey) other.migratedTo = newKey;
+      }
+      const entry = this.panels.get(oldKey);
+      if (entry === undefined || entry.sourceState === 'migrated') continue;
+      void this.continueBinding(entry, file.newUri);
+    }
+  }
+
+  /** 保存事件（SPEC-LIFE-02 / 03 / 05）：未保存文档首次保存接续原预览；已有文件另存为不迁移绑定。 */
+  notifyDocumentSaved(document: vscode.TextDocument): void {
+    const newKey = document.uri.toString();
+    for (const entry of [...this.panels.values()]) {
+      if (entry.document !== document || entry.uri === newKey || entry.sourceState === 'migrated') continue;
+      if (entry.uri.startsWith('untitled:')) {
+        // 首次保存：同一 TextDocument 对象 URI 原地更新，视为同一练习接续（SPEC-LIFE-03）
+        void this.continueBinding(entry, document.uri);
+      } else {
+        // 另存为：原预览继续绑定原文件，不追随新路径（SPEC-LIFE-05）
+        void this.reopenBinding(entry);
+      }
+    }
+  }
+
+  /**
+   * 关闭事件（SPEC-LIFE-02 / 06）：未保存文档真正放弃转入来源不可用（来源文档已不存在）；
+   * 文件类按磁盘核验——盘上内容可能与最后推送（含未保存修改）不同，以磁盘为准（SPEC-LIFE-05）。
+   */
+  notifyDocumentClosed(document: vscode.TextDocument): void {
+    for (const entry of this.panels.values()) {
+      if (entry.document !== document) continue;
+      if (document.isUntitled) {
+        this.enterUnavailable(entry);
+        return;
+      }
+      this.scheduleSourceCheck(entry.uri);
+    }
+  }
+
   /** 源码光标变化（SPEC-PLAY-11）：属于某预览的绑定文档时推送查阅标记位置；光标属于其他曲目时清除各预览的标记。 */
   notifySelectionChanged(editor: vscode.TextEditor): void {
     const uri = editor.document.uri.toString();
@@ -336,10 +414,10 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 推送查阅标记位置（SPEC-PLAY-11）：停用窗口内只记录、不应用，渲染完成后补发最新位置。 */
+  /** 推送查阅标记位置（SPEC-PLAY-11）：停用窗口内只记录、不应用，渲染完成后补发最新位置；只读状态页不推送。 */
   private sendCursor(entry: PanelEntry, offset: number | null): void {
     entry.lastCursorOffset = offset ?? undefined;
-    if (entry.suspend || !entry.renderedOnce || entry.context === undefined) {
+    if (entry.suspend || !entry.renderedOnce || entry.context === undefined || this.isReadOnlyEntry(entry)) {
       return;
     }
     const message: CursorMessage = { type: 'cursor', context: entry.context, offset };
@@ -358,6 +436,339 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (pending !== undefined && this.panels.get(entry.uri) === entry) {
       this.pushDocument(entry, pending);
     }
+  }
+
+  /** 只读来源状态（SPEC-LIFE-04 / 06）：迁移状态页与来源不可用页不参与播放、定位、设置修改与导出。 */
+  private isReadOnlyEntry(entry: PanelEntry): boolean {
+    return entry.sourceState === 'migrated' || entry.sourceState === 'unavailable';
+  }
+
+  private clearUpdateTimer(key: string): void {
+    const timer = this.updateTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.updateTimers.delete(key);
+    }
+  }
+
+  /** 显式重新预览（SPEC-LIFE-07）：清除只读来源状态并交还常规推送路径；内容推送由调用方完成。 */
+  private resumeBinding(entry: PanelEntry): void {
+    if (entry.sourceState === undefined) return;
+    entry.sourceState = undefined;
+    entry.migratedTo = undefined;
+    this.scheduleSourceCheck(entry.uri);
+  }
+
+  /**
+   * 接续绑定（SPEC-LIFE-03 / 04）：宿主已可靠确认新旧路径为同一文件（重命名对 / 首次保存的对象身份）。
+   * 先暂停并取消待起播、未提交更新与旧异步核验，再重新核验内容：内容未变时只更新身份（保留暂停位置、
+   * 设置与映射），变化或从来源不可用恢复时按常规换版推送并归零；目标已有面板时目标优先（SPEC-LIFE-04）。
+   */
+  private async continueBinding(entry: PanelEntry, newUri: vscode.Uri): Promise<void> {
+    const oldKey = entry.uri;
+    const newKey = newUri.toString();
+    if (newKey === oldKey) return;
+    const wasUnavailable = entry.sourceState === 'unavailable';
+    entry.pendingRequest = undefined;
+    this.clearUpdateTimer(oldKey);
+    entry.pendingChange = undefined;
+    this.clearSourceCheck(oldKey);
+    const conflict = this.panels.get(newKey);
+    if (conflict !== undefined) {
+      this.markMigrated(entry, newKey);
+      this.refreshTargetBinding(conflict, newUri);
+      return;
+    }
+    entry.suspend = true;
+    entry.targetRanges = [];
+    this.clearSourceHighlight(entry);
+    this.syncLinkedDecorations();
+    this.postPlayback(entry, 'pause');
+    if (wasUnavailable) {
+      entry.sourceState = undefined;
+      entry.migratedTo = undefined;
+    }
+    this.rekeyEntry(entry, newKey);
+    const document = await this.documentForUri(newUri);
+    if (this.panels.get(newKey) !== entry) return;
+    if (document === undefined) {
+      // 目标暂不可读（极罕见竞态）：按来源不可用处理，等待文件事件复核
+      this.enterUnavailable(entry);
+      return;
+    }
+    const abc = document.getText();
+    if (!wasUnavailable && entry.renderedOnce && entry.lastPushedAbc === abc) {
+      // 同一练习、内容未变：保留暂停位置、设置与映射，只更新身份标识与显示路径（SPEC-LIFE-03）
+      entry.document = document;
+      entry.panel.title = panelTitle(document);
+      void entry.panel.webview.postMessage(this.continuedMessage(entry, document));
+      return;
+    }
+    this.pushDocument(entry, document, true);
+  }
+
+  /**
+   * 身份更新消息（SPEC-LIFE-03）：内容与版本沿用最近一次推送（webview 据此保留位置），
+   * 只替换来源标识与显示路径；continued 标记本次推送属于同一练习的可靠迁移。
+   */
+  private continuedMessage(entry: PanelEntry, document: vscode.TextDocument): DocumentMessage {
+    return {
+      type: 'document',
+      uri: entry.uri,
+      fileName: fileNameOf(document),
+      abc: document.getText(),
+      isUntitled: document.isUntitled,
+      version: entry.version,
+      viewId: entry.viewId,
+      revision: entry.revision,
+      continued: true,
+    };
+  }
+
+  /** 另存为后的原绑定复核（SPEC-LIFE-05）：原预览继续绑定原文件；无缓冲区或内容变化时重新获取并按待更新规则推送。 */
+  private async reopenBinding(entry: PanelEntry): Promise<void> {
+    const key = entry.uri;
+    const current = this.findDocument(key);
+    if (current !== undefined) {
+      entry.document = current;
+      if (entry.lastPushedAbc !== current.getText()) {
+        entry.suspend = true;
+        entry.targetRanges = [];
+        this.clearSourceHighlight(entry);
+        this.syncLinkedDecorations();
+        this.pushDocument(entry, current);
+      }
+      return;
+    }
+    const opened = await this.documentForUri(vscode.Uri.parse(key));
+    if (this.panels.get(key) !== entry) return;
+    if (opened === undefined) {
+      this.scheduleSourceCheck(key);
+      return;
+    }
+    entry.document = opened;
+    if (entry.lastPushedAbc !== opened.getText()) {
+      entry.suspend = true;
+      entry.targetRanges = [];
+      this.clearSourceHighlight(entry);
+      this.syncLinkedDecorations();
+      this.pushDocument(entry, opened);
+    }
+  }
+
+  /** 迁移冲突（SPEC-LIFE-04）：来源面板保留为只读"文件已迁移"状态页；旧路径不再观察、不自动续播。 */
+  private markMigrated(entry: PanelEntry, newKey: string): void {
+    entry.pendingRequest = undefined;
+    this.clearUpdateTimer(entry.uri);
+    entry.pendingChange = undefined;
+    this.clearSourceCheck(entry.uri);
+    entry.suspend = true;
+    entry.targetRanges = [];
+    this.clearSourceHighlight(entry);
+    this.syncLinkedDecorations();
+    entry.sourceState = 'migrated';
+    entry.migratedTo = newKey;
+    entry.watcher?.dispose();
+    entry.watcher = undefined;
+    this.postPlayback(entry, 'pause');
+    this.postSourceState(entry, 'migrated');
+  }
+
+  /** 目标冲突时目标面板的重新核验（SPEC-LIFE-04）：按实际文档推送最新内容，不自动播放、不抢焦点。 */
+  private refreshTargetBinding(entry: PanelEntry, uri: vscode.Uri): void {
+    if (this.isReadOnlyEntry(entry)) return;
+    const document = vscode.workspace.textDocuments.find(
+      (candidate) => candidate.uri.toString() === uri.toString(),
+    );
+    if (document === undefined) return;
+    const abc = document.getText();
+    if (entry.version === document.version && entry.lastPushedAbc === abc) {
+      entry.document = document;
+      return;
+    }
+    entry.suspend = true;
+    entry.targetRanges = [];
+    this.clearSourceHighlight(entry);
+    this.syncLinkedDecorations();
+    this.pushDocument(entry, document);
+  }
+
+  /**
+   * 来源不可用（SPEC-LIFE-06）：保留预览页为只读参考，停音并取消起播与未提交更新；
+   * 专用观察器保留，等待原路径重新可读后恢复（SPEC-LIFE-07）。
+   */
+  private enterUnavailable(entry: PanelEntry): void {
+    if (entry.sourceState === 'unavailable') return;
+    entry.pendingRequest = undefined;
+    this.clearUpdateTimer(entry.uri);
+    entry.pendingChange = undefined;
+    entry.suspend = true;
+    entry.targetRanges = [];
+    this.clearSourceHighlight(entry);
+    this.syncLinkedDecorations();
+    entry.sourceState = 'unavailable';
+    entry.migratedTo = undefined;
+    this.postPlayback(entry, 'stop');
+    this.postSourceState(entry, 'unavailable');
+  }
+
+  /** 来源状态消息（SPEC-LIFE-04 / 06 / 07）：只带状态与展示文本，文件路径不出现在协议里。 */
+  private postSourceState(entry: PanelEntry, state: SourceStateMessage['state']): void {
+    let detail = '';
+    if (state !== 'available') {
+      detail = state === 'migrated' && entry.migratedTo !== undefined
+        ? fileNameOfUri(vscode.Uri.parse(entry.migratedTo))
+        : displayPathOf(vscode.Uri.parse(entry.uri));
+    }
+    void entry.panel.webview.postMessage({ type: 'source-state', viewId: entry.viewId, state, detail } satisfies SourceStateMessage);
+  }
+
+  /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立；改键 / 迁移 / 释放时重建或 dispose。 */
+  private attachWatcher(entry: PanelEntry): void {
+    entry.watcher?.dispose();
+    entry.watcher = undefined;
+    let uri: vscode.Uri;
+    try {
+      uri = vscode.Uri.parse(entry.uri);
+    } catch {
+      return;
+    }
+    if (uri.scheme !== 'file') return;
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.joinPath(uri, '..'), escapeGlobPattern(fileNameOfUri(uri))),
+    );
+    const schedule = () => this.scheduleSourceCheck(entry.uri);
+    watcher.onDidCreate(schedule);
+    watcher.onDidChange(schedule);
+    watcher.onDidDelete(schedule);
+    entry.watcher = watcher;
+  }
+
+  /** 文件事件防抖（SPEC-LIFE-08）：合并短暂删除再创建与原子替换的连续通知，世代序号作废过期核验。 */
+  private scheduleSourceCheck(key: string): void {
+    const generation = (this.sourceGenerations.get(key) ?? 0) + 1;
+    this.sourceGenerations.set(key, generation);
+    const timer = this.sourceTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    this.sourceTimers.set(
+      key,
+      setTimeout(() => {
+        this.sourceTimers.delete(key);
+        void this.checkSource(key, generation);
+      }, SOURCE_CHECK_DEBOUNCE_MS),
+    );
+  }
+
+  /** 作废某键的待核验与在途核验（换键 / 迁移 / 关闭时调用）。 */
+  private clearSourceCheck(key: string): void {
+    const timer = this.sourceTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.sourceTimers.delete(key);
+    }
+    this.sourceGenerations.set(key, (this.sourceGenerations.get(key) ?? 0) + 1);
+  }
+
+  /**
+   * 文件事件核验（SPEC-LIFE-06 / 07 / 08）：复核绑定目标是否仍可读；
+   * 不可读且无可用编辑器缓冲区（插件缓存的旧正文不算）时进入来源不可用，有缓冲区则继续预览并提示磁盘状态；
+   * 重新可读时重新获取内容，应用后归零、不自动播放。
+   */
+  private async checkSource(key: string, generation: number): Promise<void> {
+    if (this.sourceGenerations.get(key) !== generation) return;
+    const entry = this.panels.get(key);
+    if (entry === undefined || entry.sourceState === 'migrated') return;
+    const uri = vscode.Uri.parse(key);
+    const readable = await fileReadable(uri);
+    if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
+    if (!readable) {
+      if (this.findDocument(key) !== undefined) {
+        // 缓冲区仍可用（SPEC-LIFE-06）：继续按该文档预览，只提示磁盘状态，不重复发送
+        if (entry.sourceState !== 'disk-missing') {
+          entry.sourceState = 'disk-missing';
+          entry.migratedTo = undefined;
+          this.postSourceState(entry, 'disk-missing');
+        }
+        return;
+      }
+      this.enterUnavailable(entry);
+      return;
+    }
+    if (entry.sourceState === 'unavailable') {
+      // 来源恢复（SPEC-LIFE-07）：重新获取并校验当前内容，应用后归零，不恢复旧起播或旧映射
+      const document = await this.documentForUri(uri);
+      if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
+      if (document === undefined) return; // 读取失败：保持现状，等待下一次事件
+      entry.sourceState = undefined;
+      entry.migratedTo = undefined;
+      entry.suspend = true;
+      entry.targetRanges = [];
+      this.clearSourceHighlight(entry);
+      this.syncLinkedDecorations();
+      this.pushDocument(entry, document);
+      return;
+    }
+    if (entry.sourceState === 'disk-missing') {
+      // 磁盘恢复：清除提示（内容仍以编辑器缓冲区为准）
+      entry.sourceState = undefined;
+      this.postSourceState(entry, 'available');
+    }
+    if (this.findDocument(key) !== undefined) return; // 缓冲区存在：内容变化经 onDidChangeTextDocument 推送
+    // 无缓冲区（源码标签已关闭 / 外部原子替换，SPEC-LIFE-05 / 08）：与最近推送比对，按差异推送新版本
+    const text = await readTextFile(uri);
+    if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
+    if (text === undefined || text === entry.lastPushedAbc) return;
+    const document = await this.documentForUri(uri);
+    if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
+    if (document === undefined) return;
+    entry.suspend = true;
+    entry.targetRanges = [];
+    this.clearSourceHighlight(entry);
+    this.syncLinkedDecorations();
+    this.pushDocument(entry, document);
+  }
+
+  /** 迁移状态页的"打开迁移后的预览"入口（SPEC-LIFE-04）：只按宿主记录的目标工作，不接受 webview 路径。 */
+  private revealMigratedTarget(entry: PanelEntry): void {
+    const targetKey = entry.migratedTo;
+    if (targetKey === undefined) return;
+    const existing = this.panels.get(targetKey);
+    if (existing !== undefined) {
+      existing.panel.reveal();
+      return;
+    }
+    void this.documentForUri(vscode.Uri.parse(targetKey)).then((document) => {
+      if (document === undefined) {
+        void vscode.window.showInformationMessage(vscode.l10n.t('The source document is unavailable.'));
+        return;
+      }
+      this.createOrShow(document);
+    });
+  }
+
+  /** 按 URI 找当前打开的文档（含未保存缓冲区）；找不到返回 undefined。 */
+  private findDocument(key: string): vscode.TextDocument | undefined {
+    return vscode.workspace.textDocuments.find((document) => document.uri.toString() === key);
+  }
+
+  /** 按 URI 获取文档：优先当前缓冲区，其次从磁盘 / 提供者加载（不显示编辑器）。 */
+  private async documentForUri(uri: vscode.Uri): Promise<vscode.TextDocument | undefined> {
+    const open = this.findDocument(uri.toString());
+    if (open !== undefined) return open;
+    try {
+      return await vscode.workspace.openTextDocument(uri);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 换键（SPEC-LIFE-03）：面板仍绑定同一练习，仅更新身份标识；观察器随键重建。 */
+  private rekeyEntry(entry: PanelEntry, newKey: string): void {
+    this.panels.delete(entry.uri);
+    this.clearUpdateTimer(entry.uri);
+    entry.uri = newKey;
+    this.panels.set(newKey, entry);
+    this.attachWatcher(entry);
   }
 
   private createPanel(document: vscode.TextDocument, request?: PendingRequest): void {
@@ -398,8 +809,12 @@ export class PreviewPanelManager implements vscode.Disposable {
       lastTargetRequest: -1,
       context: undefined,
       phase: 'idle',
+      sourceState: undefined,
+      migratedTo: undefined,
+      watcher: undefined,
     };
     this.panels.set(entry.uri, entry);
+    this.attachWatcher(entry);
     panel.webview.html = this.renderHtml(panel.webview);
     if (request !== undefined) {
       // 播放类命令按需打开预览时不抢源码焦点（SPEC-CMD-07）
@@ -412,7 +827,10 @@ export class PreviewPanelManager implements vscode.Disposable {
           this.panels.delete(entry.uri);
           // 面板关闭后轮廓标记一并清除（SPEC-PLAY-11）
           this.syncLinkedDecorations();
+          this.clearSourceCheck(entry.uri);
         }
+        entry.watcher?.dispose();
+        entry.watcher = undefined;
         const timer = this.updateTimers.get(entry.uri);
         if (timer !== undefined) {
           clearTimeout(timer);
@@ -452,11 +870,18 @@ export class PreviewPanelManager implements vscode.Disposable {
           this.clearSourceHighlight(entry);
           this.syncLinkedDecorations();
           entry.suspend = true;
-          this.pushDocument(entry, entry.document);
+          const current = this.findDocument(entry.uri) ?? entry.document;
+          this.pushDocument(entry, current);
+          // 只读来源页：补发状态标记，参考谱保持在状态页展示（SPEC-LIFE-04 / 06）
+          if (entry.sourceState !== undefined) this.postSourceState(entry, entry.sourceState);
           return;
         }
         if (parsed.type === 'reveal-source') {
-          if (parsed.viewId === entry.viewId) this.revealSource(entry);
+          if (parsed.viewId === entry.viewId && !this.isReadOnlyEntry(entry)) this.revealSource(entry);
+          return;
+        }
+        if (parsed.type === 'reveal-target') {
+          if (parsed.viewId === entry.viewId) this.revealMigratedTarget(entry);
           return;
         }
         const context = parsed.context;
@@ -477,6 +902,8 @@ export class PreviewPanelManager implements vscode.Disposable {
         if (parsed.type === 'select-tune') {
           if (parsed.requestId <= entry.lastSelectionRequest) return;
           entry.lastSelectionRequest = parsed.requestId;
+          // 只读状态页不接受切曲（SPEC-LIFE-04 / 06）
+          if (this.isReadOnlyEntry(entry)) return;
           entry.pendingRequest = undefined;
           this.flushDocumentUpdate(entry);
           const current = vscode.workspace.textDocuments.find((document) => document.uri.toString() === entry.uri) ?? entry.document;
@@ -492,11 +919,13 @@ export class PreviewPanelManager implements vscode.Disposable {
           // 预览控制区"从此处播放"（SPEC-PLAY-12）：与命令共用路径（先刷新待更新文档再映射）
           if (parsed.requestId <= entry.lastTargetRequest) return;
           entry.lastTargetRequest = parsed.requestId;
+          // 只读状态页不接受起播（SPEC-LIFE-04 / 06）
+          if (this.isReadOnlyEntry(entry)) return;
           this.requestPlayFromSelection(entry.document, parsed.requestId);
           return;
         }
         if ((parsed.type === 'reveal-range' || 'ranges' in parsed) &&
-            (context.revision !== entry.revision || context.version !== entry.document.version)) return;
+            (context.revision !== entry.revision || context.version !== entry.version)) return;
         if ('ranges' in parsed && parsed.ranges.some((range) => range.end > entry.document.getText().length)) return;
         if (parsed.type === 'reveal-range') {
           if (parsed.end > entry.document.getText().length) return;
@@ -545,7 +974,8 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (message.context.version !== entry.version || message.context.revision !== entry.revision) return;
     entry.renderedOnce = true;
     entry.appliedRevision = entry.revision;
-    entry.suspend = !message.linkable || entry.pendingChange !== undefined || entry.document.version !== message.context.version;
+    // 版本基准取最近一次推送（entry.version）：来源标签关闭后按 URI 重开等场景下 entry.document 可能是重开的对象
+    entry.suspend = !message.linkable || entry.pendingChange !== undefined || entry.version !== message.context.version || this.isReadOnlyEntry(entry);
     if (entry.lastCursorOffset !== undefined) this.sendCursor(entry, entry.lastCursorOffset);
     const request = entry.pendingRequest;
     entry.pendingRequest = undefined;
@@ -686,13 +1116,15 @@ export class PreviewPanelManager implements vscode.Disposable {
     return { type: 'document', uri: entry.uri, fileName: fileNameOf(document), abc, isUntitled: document.isUntitled, version: document.version, viewId: entry.viewId, revision: entry.revision };
   }
 
-  private pushDocument(entry: PanelEntry, document: vscode.TextDocument): void {
+  private pushDocument(entry: PanelEntry, document: vscode.TextDocument, continued = false): void {
     const message = this.documentMessage(entry, document);
     const request = entry.pendingRequest;
     if (!entry.renderedOnce && request?.kind === 'play-from-cursor') {
       entry.pendingRequest = undefined;
       if (request.version === document.version) message.initialRequest = { requestId: ++entry.requestId, offset: request.offset };
     }
+    // 可靠迁移的换版推送（SPEC-LIFE-03）：标记同一练习的新身份，webview 据此接续选曲与设置记录
+    if (continued) message.continued = true;
     void entry.panel.webview.postMessage(message);
   }
 
@@ -1168,6 +1600,8 @@ export class PreviewPanelManager implements vscode.Disposable {
       <span id="content-status-text"></span>
       <button id="confirm-tune" type="button" hidden></button>
       <button id="reveal-source" type="button" hidden></button>
+      <!-- 迁移状态页入口（SPEC-LIFE-04）：打开目标预览，不自动打开、不抢焦点 -->
+      <button id="reveal-target" type="button" hidden></button>
     </div>
     <div id="score" tabindex="-1"></div>
   </div>
@@ -1203,6 +1637,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       clearTimeout(timer);
     }
     this.updateTimers.clear();
+    for (const timer of this.sourceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.sourceTimers.clear();
+    this.sourceGenerations.clear();
     this.sourceHighlight.dispose();
     this.linkedNote.dispose();
     for (const disposable of this.disposables) {
@@ -1213,8 +1652,42 @@ export class PreviewPanelManager implements vscode.Disposable {
 }
 
 function fileNameOf(document: vscode.TextDocument): string {
-  const segments = document.uri.path.split('/');
-  return segments[segments.length - 1] || document.uri.toString();
+  return fileNameOfUri(document.uri);
+}
+
+/** URI 的文件名（最后一段路径）；无路径段时退回完整 URI 文本。 */
+function fileNameOfUri(uri: vscode.Uri): string {
+  const segments = uri.path.split('/');
+  return segments[segments.length - 1] || uri.toString();
+}
+
+/** 来源标识的展示文本（SPEC-LIFE-06）：普通文件用完整路径，未保存文档用标签名。 */
+function displayPathOf(uri: vscode.Uri): string {
+  return uri.scheme === 'untitled' ? uri.path : uri.fsPath;
+}
+
+/** 文件名转义为字面量 glob（SPEC-LIFE-08）：观察单个绑定文件，不把名称中的通配符当作模式。 */
+function escapeGlobPattern(name: string): string {
+  return name.replace(/[?*[\]{}]/g, (char) => `[${char}]`);
+}
+
+/** 目标是否仍可从文件系统读取（SPEC-LIFE-08 存在性复核）：一次删除事件不构成永久丢失判定。 */
+async function fileReadable(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读取文件文本（无缓冲区时与最近推送比对）；读取失败返回 undefined，保持现状等待下一次事件。 */
+async function readTextFile(uri: vscode.Uri): Promise<string | undefined> {
+  try {
+    return new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  } catch {
+    return undefined;
+  }
 }
 
 /** 面板标题：未保存新文档标明尚未保存（SPEC-CMD-06）。 */

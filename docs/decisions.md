@@ -2,6 +2,12 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-10-02 文件生命周期事件与来源状态机
+
+- 决策：绑定迁移以可靠事件为唯一依据——`onDidRenameFiles` 的新旧对（重命名 / 移动）、`onDidSaveTextDocument` 的对象身份（untitled 首次保存 = 同一 TextDocument 对象 URI 原地更新，接续；非 untitled 的 URI 变化 = 另存为，原预览仍绑原文件）、`onDidCloseTextDocument`（untitled 真正放弃转来源不可用；文件类触发磁盘复核）；每个绑定文件另建文件名转义的内容匹配 `FileSystemWatcher`（create / change / delete），覆盖外部进程写入与原子替换。核验统一走 300ms 防抖（SOURCE_CHECK_DEBOUNCE_MS）+ `fs.stat` 存在性复核 + 世代序号（换键 / 迁移 / 关闭时递增作废在途结果）；有可用编辑器缓冲区（`workspace.textDocuments` 按 URI 命中，插件缓存旧正文不算）时不判不可用，仅提示磁盘缺失并继续按缓冲区预览；无缓冲区且不可读才进入来源不可用，恢复时重读文件并与最近推送内容比对才换版。身份接续统一为"内容未变只更新身份"：continued 消息回显最近推送版本号，webview 据此保留暂停位置、设置与映射；内容是身份判定，容忍重开文档对象的版本号回归；内容变化按常规换版推送并归零。host 的播放 / 起播命令入口对只读来源状态直接拒绝。
+- 理由：SPEC-LIFE-03 明确禁止凭"先关闭后打开、同名、相同正文"推断迁移，`onDidRenameFiles` 工作区事件提供可靠新旧对；单次 delete 通知不代表永久丢失（编辑器保存的写临时 + 重命名、外部原子替换都会出现短暂删除），防抖 + 存在性复核 + 世代作废过滤假删除与乱序（SPEC-LIFE-08）。SPEC-LIFE-06 的"插件缓存的旧正文不算可用缓冲区"不否定 VS Code 中真实打开的缓冲区——有缓冲区时必须继续预览、保留未保存修改，只为磁盘缺失提供提示。
+- 影响：previewPanel.ts 新增 notifyFilesRenamed / notifyDocumentSaved / notifyDocumentClosed、continueBinding / reopenBinding / markMigrated / refreshTargetBinding、checkSource / attachWatcher / scheduleSourceCheck、enterUnavailable / resumeBinding 与 source-state / continued 协议字段；extension.ts 订阅三个工作区事件；main.ts / tunePicker.ts 实现只读状态页（迁移 / 不可用锁定播放、定位、设置与切曲，恢复解锁）与"打开迁移后的预览"入口；版本簿记统一为 entry.version（最近推送），不再直接比较 document.version。LIFE-08 的实测记录以本条策略为准；真实文件系统事件下的行为复核在 `docs/manual-checks.md` 的 LIFE 批次交接登记。
+
 ## 2026-10-02 多曲目预览身份与解析适配
 
 - 决策（用户确认）：跨版本仅以新旧均唯一、非空且不变的真实 `X:` 匹配，不按标题、旧下标或正文相似度猜测。无 `X:` 单曲更新后也进入重选；正常单曲隐藏选择器，待确认时显示“确认此曲目”。同快照选择使用局部索引，音乐设置只在当前预览内隔离，不实现 SET 跨会话持久化。

@@ -243,4 +243,18 @@ describe('严格身份与会话切换', () => {
     session.select(0);
     expect(session.settingsFor('v').settings.speed).toBe(100);
   });
+
+  it('[SPEC-LIFE-03] 可靠迁移只更新身份标识，快照、暂停版本与设置记录沿用', () => {
+    const session = new TuneSession();
+    session.receive(snapshot(), false);
+    session.remember({ ...defaultMusicSettings(), speed: 60 }, 'v');
+    session.receive(snapshot(book + '\n% pending', 2), true);
+    session.rekey('file:///moved.abc');
+    expect(session.snapshot?.uri).toBe('file:///moved.abc');
+    expect(session.pending?.uri).toBe('file:///moved.abc');
+    // 迁移后的新版本仍视为同一文档：设置记录沿用而不是清空
+    session.receive({ uri: 'file:///moved.abc', version: 2, abc: book + '\n% pending' }, false);
+    expect(session.current?.id).toBe('1');
+    expect(session.settingsFor('v').settings.speed).toBe(60);
+  });
 });

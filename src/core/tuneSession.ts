@@ -110,6 +110,19 @@ export class TuneSession {
     this.selectionRequest = undefined;
   }
 
+  /**
+   * 可靠迁移（SPEC-LIFE-03）：宿主已确认新 URI 与当前文档属于同一练习时更新身份标识，
+   * 使后续快照仍视为同一文档——保留选曲与设置记录，不当作新文档清空。
+   */
+  rekey(uri: string): void {
+    if (this.snapshot !== undefined && this.snapshot.uri !== uri) {
+      this.snapshot = { ...this.snapshot, uri };
+    }
+    if (this.pending !== undefined && this.pending.uri !== uri) {
+      this.pending = { ...this.pending, uri };
+    }
+  }
+
   remember(settings: MusicSettings, signature: string | null): void {
     if (this.selected === null || this.identityCatalog !== this.catalog) return;
     this.records.set(this.selected, { settings: { ...settings, mutedVoices: [...settings.mutedVoices] }, signature, revalidate: false });

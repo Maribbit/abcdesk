@@ -34,6 +34,17 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeTextDocument((event) => {
       previews.notifyDocumentChanged(event.document);
     }),
+    // 文件生命周期（SPEC-LIFE-03 / 05 / 06）：重命名 / 移动按可靠的新旧对迁移绑定；
+    // 首次保存与另存为区分接续；关闭标签后按磁盘存在性复核来源状态。
+    vscode.workspace.onDidRenameFiles((event) => {
+      previews.notifyFilesRenamed(event.files);
+    }),
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      previews.notifyDocumentSaved(document);
+    }),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      previews.notifyDocumentClosed(document);
+    }),
     // 源码光标移动推送到对应预览（SPEC-PLAY-11）：停止 / 暂停时突出映射音符并滚动，
     // 播放中只更新查阅标记；光标离开绑定文档时清除各预览的标记。
     vscode.window.onDidChangeTextEditorSelection((event) => {
