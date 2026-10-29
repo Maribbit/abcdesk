@@ -1,4 +1,5 @@
 import { t } from './l10n';
+import type { PracticeUiPreferences } from '../core/practice';
 
 /**
  * 钢琴键盘可视化（SPEC-PLAY-08 / 09 / 15、SPEC-STATE-03 / 05）与音域算法。
@@ -189,6 +190,8 @@ export class KeyboardView {
   private activePitches: number[] = [];
   /** 查阅 / 点选反射（SPEC-PLAY-15）：光标或点选命中的音高，与播放高亮独立。 */
   private pointedPitches: number[] = [];
+  /** 用户改变收起 / 音域后通知调用方保存（SPEC-SET-05）；恢复偏好时不触发。 */
+  onPreferencesChange: (() => void) | undefined;
 
   constructor(elements: KeyboardElements) {
     this.elements = elements;
@@ -253,6 +256,24 @@ export class KeyboardView {
     this.setPointedPitches([]);
   }
 
+  /** 当前文件级界面偏好（SPEC-SET-05）：收起与音域模式，选曲与播放位置不持久。 */
+  getPreferences(): PracticeUiPreferences {
+    return { keyboardCollapsed: this.collapsed, keyboardMode: this.mode };
+  }
+
+  /** 恢复界面偏好（SPEC-SET-05）：只改变视图，不触发保存回调；音域按当前曲目重新计算。 */
+  applyPreferences(preferences: PracticeUiPreferences): void {
+    this.mode = preferences.keyboardMode;
+    this.elements.rangeSelect.value = this.mode;
+    this.collapsed = preferences.keyboardCollapsed;
+    this.updateCollapseButton();
+    if (this.hasTune) {
+      this.rebuild();
+    } else {
+      this.updateVisibility();
+    }
+  }
+
   private applyStaticTexts(): void {
     const { elements } = this;
     elements.caption.textContent = t('keyboard-caption');
@@ -278,6 +299,7 @@ export class KeyboardView {
     if (this.hasTune) {
       this.rebuild();
     }
+    this.onPreferencesChange?.();
   }
 
   private setCollapsed(collapsed: boolean): void {
@@ -293,6 +315,7 @@ export class KeyboardView {
       this.scrollToTuneRange();
       this.updateArrows();
     }
+    this.onPreferencesChange?.();
   }
 
   private updateCollapseButton(): void {

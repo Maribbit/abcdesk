@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as vscode from 'vscode';
 import { PreviewPanelManager } from '../src/extension/previewPanel';
 import { parseHostMessage, type HostMessage, type PreviewContext } from '../src/core/messages';
+import { PRACTICE_SCHEMA_VERSION, practiceStorageKey, type PracticeRecord } from '../src/core/practice';
 
 const env = vi.hoisted(() => ({
   panels: [] as Panel[], documents: [] as Doc[], editors: [] as Editor[], notices: [] as string[],
@@ -10,6 +11,9 @@ const env = vi.hoisted(() => ({
   watchers: [] as Array<{ create: () => void; change: () => void; delete: () => void; dispose: () => void }>,
   diagnosticCalls: [] as Array<{ kind: string; uri: string; values: unknown[] }>,
   commands: [] as string[],
+  remember: true,
+  folders: [{}] as unknown[],
+  storage: new Map<string, unknown>(),
 }));
 function uri(value: string): vscode.Uri {
   const scheme = value.slice(0, value.indexOf(':'));
@@ -81,6 +85,8 @@ vi.mock('vscode', () => ({
   },
   workspace: {
     get textDocuments() { return env.documents; },
+    get workspaceFolders() { return env.folders; },
+    getConfiguration: () => ({ get: () => env.remember }),
     createFileSystemWatcher: () => {
       const watcher = {
         create: () => {}, change: () => {}, delete: () => {}, dispose: () => {},
@@ -117,9 +123,23 @@ vi.mock('vscode', () => ({
     showTextDocument: () => env.openEditor?.(),
   },
 }));
+class MemoryState {
+  get<T>(key: string, fallback?: T): T | undefined {
+    return (env.storage.has(key) ? env.storage.get(key) : fallback) as T | undefined;
+  }
+  update(key: string, value: unknown): Promise<void> {
+    if (value === undefined) env.storage.delete(key);
+    else env.storage.set(key, value);
+    return Promise.resolve();
+  }
+  keys(): readonly string[] { return [...env.storage.keys()]; }
+}
 let manager: PreviewPanelManager;
 let doc: Doc;
 const asDocument = (doc: Doc) => doc as unknown as vscode.TextDocument;
+function createManager(): PreviewPanelManager {
+  return new PreviewPanelManager(uri('file:///extension') as vscode.Uri, new MemoryState() as unknown as vscode.Memento);
+}
 function last<T extends HostMessage['type']>(panel: Panel, type: T) {
   return panel.sent.filter((message): message is Extract<HostMessage, { type: T }> => message.type === type).at(-1)!;
 }
@@ -142,7 +162,8 @@ beforeEach(() => {
   env.panels = []; env.documents = []; env.editors = []; env.notices = []; env.openEditor = undefined;
   env.files = new Map(); env.statCalls = 0; env.watchers = [];
   env.diagnosticCalls = []; env.commands = [];
-  manager = new PreviewPanelManager(uri('file:///extension') as vscode.Uri);
+  env.remember = true; env.folders = [{}]; env.storage = new Map();
+  manager = createManager();
   doc = new Doc();
   env.documents.push(doc);
 });
@@ -526,5 +547,139 @@ describe('解析诊断与问题入口', () => {
     expect(env.commands).toEqual(['workbench.action.problems.focus']);
     panel.dispose();
     expect(env.diagnosticCalls.at(-1)).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
+  });
+});
+
+describe('练习记录持久化', () => {
+  const key = (uriText = 'file:///book.abc') => practiceStorageKey(uriText);
+  const record = (speed = 70, keyboardCollapsed = true): PracticeRecord => ({
+    version: PRACTICE_SCHEMA_VERSION,
+    ui: { keyboardCollapsed, keyboardMode: 'full' },
+    tunes: [{ id: '1', signature: 'sig-1', settings: { speed, loop: true, chordsMuted: true, mutedVoices: [0] } }],
+  });
+  const settings = (speed: number) => ({ speed, loop: true, chordsMuted: false, mutedVoices: [] });
+  const report = (context: PreviewContext, tunes: PracticeRecord['tunes']) => ({
+    type: 'practice-state' as const, context, ui: { keyboardCollapsed: false, keyboardMode: 'tune' as const }, tunes,
+  });
+  /** 用已知的工作区状态重建管理器：记录在建面板时读取。 */
+  function reopen(): void {
+    manager.dispose();
+    manager = createManager();
+  }
+
+  it('[SPEC-SET-02] 记录只随视图首次推送，后续换版不再附带', async () => {
+    env.storage.set(key(), record());
+    reopen();
+    const panel = open(doc);
+    expect(last(panel, 'document').practice).toMatchObject({
+      ui: { keyboardCollapsed: true, keyboardMode: 'full' },
+      tunes: [{ id: '1', signature: 'sig-1' }],
+    });
+    applied(panel);
+    doc.version += 1;
+    doc.abc += '\n% edit';
+    manager.notifyDocumentChanged(asDocument(doc));
+    await vi.advanceTimersByTimeAsync(300);
+    const message = last(panel, 'document');
+    expect(message.version).toBe(2);
+    expect(message.practice).toBeUndefined();
+  });
+
+  it('[SPEC-SET-08] 无效记录安全回退默认值，且不删除原始存储', () => {
+    const invalid = { version: 2, ui: {}, tunes: 'x' };
+    env.storage.set(key(), invalid);
+    reopen();
+    const panel = open(doc);
+    expect(last(panel, 'document').practice).toBeUndefined();
+    expect(env.storage.get(key())).toBe(invalid);
+  });
+
+  it('[SPEC-SET-06] 关闭记忆开关不读不写，当前会话仍可继续上报', () => {
+    const stored = record();
+    env.storage.set(key(), stored);
+    env.remember = false;
+    reopen();
+    const panel = open(doc);
+    expect(last(panel, 'document').practice).toBeUndefined();
+    panel.received(report(applied(panel), [{ id: '1', signature: 'sig-1', settings: settings(55) }]));
+    expect(env.storage.get(key())).toBe(stored);
+  });
+
+  it('[SPEC-SET-03] [SPEC-SET-08] 上报只合并当前可靠曲目，未变化与过期修订不重写', () => {
+    const panel = open(doc);
+    const context = applied(panel);
+    // 当前文档不存在的曲目（X:9）不进入持久记录
+    panel.received(report(context, [
+      { id: '2', signature: 'sig-2', settings: { speed: 90, loop: false, chordsMuted: true, mutedVoices: [1] } },
+      { id: '9', signature: null, settings: settings(80) },
+    ]));
+    const first = env.storage.get(key()) as PracticeRecord;
+    expect(first.tunes.map((tune) => tune.id)).toEqual(['2']);
+    // 未提及的旧曲目保留，同一曲目以新记录覆盖
+    panel.received(report(context, [{ id: '1', signature: 'sig-1', settings: settings(60) }]));
+    const merged = env.storage.get(key()) as PracticeRecord;
+    expect(merged.tunes.map((tune) => tune.id)).toEqual(['1', '2']);
+    // 相同状态重复上报不触发写入
+    panel.received(report(context, merged.tunes));
+    expect(env.storage.get(key())).toBe(merged);
+    // 过期修订（内容已换版）不覆盖当前记录
+    panel.received(report({ ...context, revision: context.revision + 1 }, [{ id: '1', signature: null, settings: settings(25) }]));
+    expect(env.storage.get(key())).toBe(merged);
+  });
+
+  it('[SPEC-SET-07] 重置删除当前文件记录，重新就绪不再恢复', () => {
+    env.storage.set(key(), record());
+    reopen();
+    const panel = open(doc);
+    const context = applied(panel);
+    panel.received({ type: 'reset-practice', context });
+    expect(env.storage.has(key())).toBe(false);
+    panel.received({ type: 'ready' });
+    expect(last(panel, 'document').practice).toBeUndefined();
+  });
+
+  it('[SPEC-SET-02] 未保存文档只留会话内，首次保存后随绑定迁移落盘', async () => {
+    const unsaved = new Doc();
+    unsaved.isUntitled = true;
+    unsaved.uri = uri('untitled:1');
+    env.documents.push(unsaved);
+    const panel = open(unsaved);
+    const context = applied(panel);
+    panel.received(report(context, [{ id: '1', signature: 'sig-1', settings: settings(55) }]));
+    expect(env.storage.size).toBe(0);
+    unsaved.uri = uri('file:///saved.abc');
+    env.files.set('file:///saved.abc', unsaved.abc);
+    manager.notifyDocumentSaved(asDocument(unsaved));
+    await flush();
+    expect(env.storage.get(key('file:///saved.abc'))).toMatchObject({
+      tunes: [{ id: '1', signature: 'sig-1', settings: settings(55) }],
+    });
+    expect(last(panel, 'document')).toMatchObject({ uri: 'file:///saved.abc', continued: true });
+  });
+
+  it('[SPEC-LIFE-04] [SPEC-SET-08] 迁移目标已有记录时目标优先，不覆盖不删除来源', async () => {
+    const source = record();
+    const target = record(40, false);
+    env.storage.set(key(), source);
+    env.storage.set(key('file:///moved.abc'), target);
+    reopen();
+    const panel = open(doc);
+    const context = applied(panel);
+    doc.uri = uri('file:///moved.abc');
+    manager.notifyFilesRenamed([{ oldUri: uri('file:///book.abc'), newUri: doc.uri }]);
+    await flush();
+    expect(last(panel, 'source-state').state).toBe('migrated');
+    expect(env.storage.get(key('file:///moved.abc'))).toBe(target);
+    expect(env.storage.get(key())).toBe(source);
+    // 只读迁移页的迟到上报不写入
+    panel.received(report(context, [{ id: '1', signature: 'sig-1', settings: settings(25) }]));
+    expect(env.storage.get(key())).toBe(source);
+  });
+
+  it('[SPEC-SET-08] 无工作区不落盘', () => {
+    env.folders = [];
+    const panel = open(doc);
+    panel.received(report(applied(panel), [{ id: '1', signature: 'sig-1', settings: settings(55) }]));
+    expect(env.storage.size).toBe(0);
   });
 });

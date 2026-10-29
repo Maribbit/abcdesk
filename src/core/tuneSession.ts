@@ -1,4 +1,5 @@
 import { createTuneCatalog, matchTune, type PreviewTune, type TuneCatalog } from './tunes';
+import type { PracticeTuneRecord } from './practice';
 
 export interface TuneSnapshot { uri: string; version: number; abc: string }
 export interface MusicSettings { speed: number; loop: boolean; chordsMuted: boolean; mutedVoices: number[] }
@@ -126,6 +127,53 @@ export class TuneSession {
   remember(settings: MusicSettings, signature: string | null): void {
     if (this.selected === null || this.identityCatalog !== this.catalog) return;
     this.records.set(this.selected, { settings: { ...settings, mutedVoices: [...settings.mutedVoices] }, signature, revalidate: false });
+  }
+
+  /**
+   * 恢复本文件已保存的曲目记录（SPEC-SET-02 ~ 04）：只按真实且唯一的 X: 匹配，
+   * 记录的声部签名标记为待核验——与当前清单不符时清除静音并提示。
+   */
+  restore(records: readonly PracticeTuneRecord[]): void {
+    const byId = new Map<string, PracticeTuneRecord>();
+    for (const record of records) byId.set(record.id, record);
+    for (const [index, tune] of this.catalog.tunes.entries()) {
+      if (!tune.reliable || tune.id === null) continue;
+      const record = byId.get(tune.id);
+      if (record === undefined) continue;
+      this.records.set(index, {
+        settings: { ...record.settings, mutedVoices: [...record.settings.mutedVoices] },
+        signature: record.signature,
+        revalidate: true,
+      });
+    }
+  }
+
+  /** 导出可持久化的曲目记录（SPEC-SET-08）：只含真实 X: 与轻量设置，签名不可靠时不留静音。 */
+  exportRecords(): PracticeTuneRecord[] {
+    const exported: PracticeTuneRecord[] = [];
+    const seen = new Set<string>();
+    for (const [index, record] of [...this.records].sort(([first], [second]) => first - second)) {
+      const tune = this.catalog.tunes[index];
+      if (tune === undefined || !tune.reliable || tune.id === null || seen.has(tune.id)) continue;
+      seen.add(tune.id);
+      exported.push({
+        id: tune.id,
+        signature: record.signature,
+        settings: {
+          ...record.settings,
+          // 持久形状与校验一致：静音按编号排序去重；签名不可靠时不留静音
+          mutedVoices: record.signature === null
+            ? []
+            : [...new Set(record.settings.mutedVoices)].sort((first, second) => first - second),
+        },
+      });
+    }
+    return exported;
+  }
+
+  /** 重置本文件（SPEC-SET-07）：清空全部曲目记录；当前选曲与播放状态由调用方另行处理。 */
+  clearRecords(): void {
+    this.records.clear();
   }
 
   settingsFor(signature: string | null): { settings: MusicSettings; voicesChanged: boolean } {

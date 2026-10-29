@@ -1,4 +1,12 @@
 /** SPEC-ENV-04 / STATE-02：双向白名单与上下文校验，不接受文件操作路径。 */
+import {
+  PRACTICE_SCHEMA_VERSION,
+  parsePracticeRecord,
+  type PracticeRecord,
+  type PracticeTuneRecord,
+  type PracticeUiPreferences,
+} from './practice';
+
 export interface PreviewContext {
   viewId: number;
   revision: number;
@@ -25,10 +33,20 @@ export interface WebviewTargetRangesMessage { type: 'target-ranges'; context: Pr
 export interface WebviewPlayFromSelectionRequestMessage { type: 'play-from-selection-request'; context: PreviewContext; requestId: number }
 export interface WebviewContextInvalidatedMessage { type: 'context-invalidated'; context: PreviewContext; cancelRequests?: boolean }
 export interface WebviewSelectTuneMessage { type: 'select-tune'; context: PreviewContext; requestId: number }
+/** 练习记录提交（SPEC-SET-03 ~ 08）：全量界面偏好与曲目记录，由宿主按文件合并保存。 */
+export interface WebviewPracticeStateMessage {
+  type: 'practice-state';
+  context: PreviewContext;
+  ui: PracticeUiPreferences;
+  tunes: PracticeTuneRecord[];
+}
+/** 重置本文件练习设置（SPEC-SET-07）：宿主删除该文件的记录，不修改 ABC 或播放状态。 */
+export interface WebviewResetPracticeMessage { type: 'reset-practice'; context: PreviewContext }
 export type WebviewMessage = WebviewReadyMessage | WebviewRenderedMessage | WebviewPlaybackStateMessage |
   WebviewRevealSourceMessage | WebviewRevealTargetMessage | WebviewRevealRangeMessage | WebviewLinkageUnavailableMessage |
   WebviewSourceHighlightMessage | WebviewTargetRangesMessage | WebviewPlayFromSelectionRequestMessage |
-  WebviewContextInvalidatedMessage | WebviewSelectTuneMessage | WebviewDiagnosticsMessage | WebviewShowProblemsMessage;
+  WebviewContextInvalidatedMessage | WebviewSelectTuneMessage | WebviewDiagnosticsMessage | WebviewShowProblemsMessage |
+  WebviewPracticeStateMessage | WebviewResetPracticeMessage;
 
 export interface DocumentMessage {
   type: 'document';
@@ -43,6 +61,8 @@ export interface DocumentMessage {
   continued?: boolean;
   /** 首次源码意图优先于默认第一首；编号属于宿主操作序列。 */
   initialRequest?: { requestId: number; offset: number };
+  /** 已保存文件的练习记录（SPEC-SET-02）：只在视图首次推送时附带，恢复后由 webview 全量回传。 */
+  practice?: PracticeRecord;
 }
 /** 来源状态页（SPEC-LIFE-04 / 06 / 07）：迁移 / 不可用 / 磁盘缺失提示与恢复清除，不带文件操作路径。 */
 export interface SourceStateMessage {
@@ -125,6 +145,11 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
         ? { type: message.type, context, items: message.items.map(({ message: text, start, end }) => ({ message: text, start, end })) } : undefined;
     case 'play-from-selection-request':
     case 'select-tune': return isSequence(message.requestId) ? { type: message.type, context, requestId: message.requestId } : undefined;
+    case 'practice-state': {
+      const record = parsePracticeRecord({ version: PRACTICE_SCHEMA_VERSION, ui: message.ui, tunes: message.tunes });
+      return record === undefined ? undefined : { type: message.type, context, ui: record.ui, tunes: record.tunes };
+    }
+    case 'reset-practice': return { type: message.type, context };
     default: return undefined;
   }
 }
@@ -143,6 +168,11 @@ export function parseHostMessage(value: unknown): HostMessage | undefined {
       const request = object(message.initialRequest);
       if (request === undefined || !isSequence(request.requestId) || !isSequence(request.offset) || request.offset > result.abc.length) return undefined;
       result.initialRequest = { requestId: request.requestId, offset: request.offset };
+    }
+    if (message.practice !== undefined) {
+      // 无效记录安全回退（SPEC-SET-08）：忽略该项，不拒绝整份文档
+      const practice = parsePracticeRecord(message.practice);
+      if (practice !== undefined) result.practice = practice;
     }
     return result;
   }

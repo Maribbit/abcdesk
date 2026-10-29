@@ -63,6 +63,9 @@ const EN: Record<string, string> = {
   'voices-pause-adjust': 'Pause to adjust voices',
   'voice-label': 'Voice {0}',
   'voices-chords': 'Auto chords',
+  'more': 'More',
+  'reset-practice': 'Reset practice settings for this file',
+  'reset-practice-note': 'Restores speed, loop, voices, and keyboard layout; the ABC source is not changed.',
   'applying-speed': 'Applying speed…',
 };
 
@@ -123,6 +126,9 @@ const ZH_CN: Record<string, string> = {
   'voices-pause-adjust': '暂停以调整声部',
   'voice-label': '声部 {0}',
   'voices-chords': '和弦伴奏',
+  'more': '更多',
+  'reset-practice': '重置本文件练习设置',
+  'reset-practice-note': '恢复速度、循环、声部与键盘布局；不会修改 ABC 源文件。',
   'applying-speed': '正在应用速度…',
 };
 

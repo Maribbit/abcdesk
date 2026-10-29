@@ -149,3 +149,49 @@ describe('文件生命周期消息', () => {
     expect(parseWebviewMessage({ type: 'reveal-target', viewId: -1 })).toBeUndefined();
   });
 });
+
+describe('练习设置消息', () => {
+  const settings = { speed: 100, loop: false, chordsMuted: false, mutedVoices: [3, 1] };
+  const practice = {
+    version: 1,
+    ui: { keyboardCollapsed: false, keyboardMode: 'tune' },
+    tunes: [{ id: '1', signature: 'v1', settings }],
+  };
+
+  it('[SPEC-SET-03] [SPEC-SET-04] [SPEC-SET-08] 上报按记录整体校验并规范化', () => {
+    expect(parseWebviewMessage({ type: 'practice-state', context, ...practice, ui: practice.ui, tunes: practice.tunes, path: 'ignored' }))
+      .toEqual({
+        type: 'practice-state',
+        context,
+        ui: practice.ui,
+        tunes: [{ id: '1', signature: 'v1', settings: { ...settings, mutedVoices: [1, 3] } }],
+      });
+    // 无法确认声部清单时，静音不进入持久形状
+    expect(parseWebviewMessage({ type: 'practice-state', context, ui: practice.ui, tunes: [{ ...practice.tunes[0], signature: null }] }))
+      .toMatchObject({ tunes: [{ signature: null, settings: { mutedVoices: [] } }] });
+    for (const bad of [
+      { ui: { keyboardCollapsed: 'no', keyboardMode: 'tune' }, tunes: [] },
+      { ui: practice.ui, tunes: [{ ...practice.tunes[0], settings: { ...settings, speed: 201 } }] },
+      { ui: practice.ui, tunes: [{ ...practice.tunes[0], settings: { ...settings, mutedVoices: [0.5] } }] },
+      { ui: practice.ui, tunes: [practice.tunes[0], practice.tunes[0]] },
+      { ui: practice.ui, tunes: 'x' },
+    ]) expect(parseWebviewMessage({ type: 'practice-state', context, ...bad })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'practice-state', ...practice })).toBeUndefined();
+  });
+
+  it('[SPEC-SET-07] 重置只携带当前上下文，不夹带路径或记录', () => {
+    expect(parseWebviewMessage({ type: 'reset-practice', context, uri: 'ignored', tunes: [] }))
+      .toEqual({ type: 'reset-practice', context });
+    expect(parseWebviewMessage({ type: 'reset-practice' })).toBeUndefined();
+  });
+
+  it('[SPEC-SET-02] 文档记录无效时忽略该项但不拒绝整份文档', () => {
+    expect(parseHostMessage({ ...document, practice })).toEqual({
+      ...document,
+      practice: { ...practice, tunes: [{ ...practice.tunes[0], settings: { ...settings, mutedVoices: [1, 3] } }] },
+    });
+    expect(parseHostMessage({ ...document, practice: { ...practice, version: 2 } })).toEqual(document);
+    expect(parseHostMessage({ ...document, practice: { ...practice, tunes: [{ ...practice.tunes[0], id: '' }] } })).toEqual(document);
+    expect(parseHostMessage({ ...document, practice: 'x' })).toEqual(document);
+  });
+});

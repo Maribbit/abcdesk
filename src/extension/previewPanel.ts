@@ -13,9 +13,13 @@ import {
   type SourceStateMessage,
   type WebviewDiagnosticsMessage,
   type WebviewPlaybackStateMessage,
+  type WebviewPracticeStateMessage,
   type WebviewRenderedMessage,
   type WebviewRevealRangeMessage,
 } from '../core/messages';
+import { PRACTICE_SCHEMA_VERSION, defaultPracticeUiPreferences, type PracticeRecord } from '../core/practice';
+import { createTuneCatalog } from '../core/tunes';
+import { PracticeStore, mergePracticeIfChanged } from './practiceStore';
 
 /**
  * 音乐预览面板管理（SPEC-CMD-03 / 06 / 07 / 09 / 10 / 12、SPEC-ENV-03 / 04 / 05、SPEC-PLAY-01 / 02 / 11）：
@@ -94,6 +98,8 @@ interface PanelEntry {
   migratedTo: string | undefined;
   /** 已发布到 Problems 的诊断（SPEC-STATE-06）：迁移时随身份迁移，只读 / 关闭时清除。 */
   diagnostics: vscode.Diagnostic[];
+  /** 本文件最近提交的练习记录（SPEC-SET-02 / 08）：已保存文档取自工作区状态，未保存文档仅留在会话内。 */
+  practiceState: PracticeRecord | undefined;
   /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立，改键 / 关闭时重建或释放。 */
   watcher: vscode.FileSystemWatcher | undefined;
 }
@@ -132,8 +138,11 @@ export class PreviewPanelManager implements vscode.Disposable {
   });
   /** 解析诊断集合（SPEC-STATE-06）：按绑定文档键控，每次渲染全量覆盖，空列表即清除。 */
   private readonly diagnostics = vscode.languages.createDiagnosticCollection('abcdesk');
+  /** 练习记录存取（SPEC-SET-02 ~ 08）：工作区状态，按文件 URI 分键。 */
+  private readonly practiceStore: PracticeStore;
 
-  constructor(private readonly extensionUri: vscode.Uri) {
+  constructor(private readonly extensionUri: vscode.Uri, workspaceState?: vscode.Memento) {
+    this.practiceStore = new PracticeStore(workspaceState);
     // 可见编辑器变化时同步轮廓标记（SPEC-PLAY-11）：新可见的编辑器按当前目标区间重绘
     this.disposables.push(
       vscode.window.onDidChangeVisibleTextEditors(() => this.syncLinkedDecorations()),
@@ -484,9 +493,10 @@ export class PreviewPanelManager implements vscode.Disposable {
     entry.pendingChange = undefined;
     this.clearSourceCheck(oldKey);
     const conflict = this.panels.get(newKey);
-    if (conflict !== undefined) {
+    // 目标已有预览或设置记录时目标优先（SPEC-LIFE-04）：来源保留为只读迁移页
+    if (conflict !== undefined || this.practiceStore.read(newKey) !== undefined) {
       this.markMigrated(entry, newKey);
-      this.refreshTargetBinding(conflict, newUri);
+      if (conflict !== undefined) this.refreshTargetBinding(conflict, newUri);
       return;
     }
     entry.suspend = true;
@@ -499,6 +509,8 @@ export class PreviewPanelManager implements vscode.Disposable {
       entry.migratedTo = undefined;
     }
     this.rekeyEntry(entry, newKey);
+    // 持久记录随绑定迁移（SPEC-LIFE-03、SET-08）：目标无记录时复制，来源不删除
+    this.practiceStore.migrate(entry.practiceState, newKey);
     const document = await this.documentForUri(newUri);
     if (this.panels.get(newKey) !== entry) return;
     if (document === undefined) {
@@ -635,6 +647,36 @@ export class PreviewPanelManager implements vscode.Disposable {
         : displayPathOf(vscode.Uri.parse(entry.uri));
     }
     void entry.panel.webview.postMessage({ type: 'source-state', viewId: entry.viewId, state, detail } satisfies SourceStateMessage);
+  }
+
+  /**
+   * 练习记录提交（SPEC-SET-03 ~ 08）：只接受当前文档真实且唯一的 X: 曲目；
+   * 与已有记录合并（未提及的旧曲目保留），未保存文档只留会话内，重复上报不触发写入。
+   */
+  private applyPracticeState(entry: PanelEntry, message: WebviewPracticeStateMessage): void {
+    const catalog = createTuneCatalog(entry.lastPushedAbc ?? '');
+    const known = new Set<string>();
+    for (const tune of catalog.tunes) {
+      if (tune.reliable && tune.id !== null) known.add(tune.id);
+    }
+    const incoming: PracticeRecord = {
+      version: PRACTICE_SCHEMA_VERSION,
+      ui: message.ui,
+      tunes: message.tunes.filter((tune) => known.has(tune.id)),
+    };
+    const base = entry.practiceState ?? this.practiceStore.read(entry.uri);
+    const defaults = defaultPracticeUiPreferences();
+    const hasContent = incoming.tunes.length > 0 ||
+      incoming.ui.keyboardCollapsed !== defaults.keyboardCollapsed ||
+      incoming.ui.keyboardMode !== defaults.keyboardMode;
+    // 无记录且仍是全默认：不创建空记录（打开文件本身不算一次练习设置）
+    if (base === undefined && !hasContent) return;
+    const merged = mergePracticeIfChanged(base, incoming);
+    entry.practiceState = merged;
+    if (merged === base) return;
+    // 未保存新文档仅保留会话内记录（SPEC-SET-02）：首次保存时随绑定迁移落盘
+    if (entry.document.isUntitled) return;
+    this.practiceStore.save(entry.uri, merged);
   }
 
   /**
@@ -867,6 +909,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       sourceState: undefined,
       migratedTo: undefined,
       diagnostics: [],
+      practiceState: this.practiceStore.read(document.uri.toString()),
       watcher: undefined,
     };
     this.panels.set(entry.uri, entry);
@@ -950,6 +993,18 @@ export class PreviewPanelManager implements vscode.Disposable {
         }
         const context = parsed.context;
         if (context.viewId !== entry.viewId) return;
+        // 练习记录提交（SPEC-SET-03 ~ 08）：按最近推送的版本与修订校验，晚到结果不覆盖新记录
+        if (parsed.type === 'practice-state' || parsed.type === 'reset-practice') {
+          if (context.version !== entry.version || context.revision !== entry.revision) return;
+          if (this.isReadOnlyEntry(entry)) return;
+          if (parsed.type === 'reset-practice') {
+            entry.practiceState = undefined;
+            this.practiceStore.clear(entry.uri);
+            return;
+          }
+          this.applyPracticeState(entry, parsed);
+          return;
+        }
         if (parsed.type === 'context-invalidated') {
           const known = (context.revision === entry.revision && context.version === entry.version) ||
             (context.revision === entry.context?.revision && context.version === entry.context.version);
@@ -1186,6 +1241,8 @@ export class PreviewPanelManager implements vscode.Disposable {
 
   private pushDocument(entry: PanelEntry, document: vscode.TextDocument, continued = false): void {
     const message = this.documentMessage(entry, document);
+    // 已保存文件的练习记录只随视图首次推送（SPEC-SET-02）：恢复后由 webview 全量回传
+    if (!entry.renderedOnce && entry.practiceState !== undefined) message.practice = entry.practiceState;
     const request = entry.pendingRequest;
     if (!entry.renderedOnce && request?.kind === 'play-from-cursor') {
       entry.pendingRequest = undefined;
@@ -1456,6 +1513,52 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     #voices-pause:hover { background: rgb(128 128 128 / 25%); }
     #voices-pause[hidden] { display: none; }
+    /* 更多菜单（SPEC-SET-07）：与声部菜单同风格；重置入口附说明，不新增命令 */
+    #more-menu { position: relative; }
+    #more-menu summary {
+      font: inherit;
+      list-style: none;
+      padding: 4px 10px;
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, transparent));
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    #more-menu summary::-webkit-details-marker { display: none; }
+    #more-menu summary::after { content: ' ▾'; }
+    #more-menu[open] summary::after { content: ' ▴'; }
+    #more-panel {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      z-index: 4;
+      width: 240px;
+      max-width: calc(100vw - 24px);
+      padding: 6px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, transparent));
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+    }
+    #reset-practice {
+      display: block;
+      width: 100%;
+      font: inherit;
+      padding: 6px;
+      text-align: left;
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+      background: transparent;
+      border: none;
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    #reset-practice:hover { background: rgb(128 128 128 / 25%); }
+    #reset-practice-note {
+      margin: 6px 4px 2px;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      white-space: normal;
+    }
     .abcdesk-voice-row { padding: 3px 4px; white-space: nowrap; }
     .abcdesk-voice-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
     /* 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 待更新提示，位于控制区下方 */
@@ -1659,6 +1762,14 @@ export class PreviewPanelManager implements vscode.Disposable {
       </span>
       <span class="abcdesk-control-group">
         <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
+        <!-- 更多菜单（SPEC-SET-07）：本文件练习设置重置；不修改 ABC、不新增公开命令 -->
+        <details id="more-menu">
+          <summary id="more-summary"></summary>
+          <div id="more-panel">
+            <button id="reset-practice" type="button"></button>
+            <p id="reset-practice-note"></p>
+          </div>
+        </details>
       </span>
     </div>
     <div id="progress-row">

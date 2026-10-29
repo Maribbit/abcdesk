@@ -7,7 +7,8 @@ import { PreviewPanelManager } from './previewPanel';
 // 数量与 ID 集合由 test/manifest.test.ts 的绑定测试守住；命令注册集中在 activate。
 
 export function activate(context: vscode.ExtensionContext): void {
-  const previews = new PreviewPanelManager(context.extensionUri);
+  // 练习记录保存在扩展的工作区状态（SPEC-SET-02 / 08、P04 决议）
+  const previews = new PreviewPanelManager(context.extensionUri, context.workspaceState);
   context.subscriptions.push(previews);
 
   context.subscriptions.push(

@@ -1,6 +1,7 @@
 import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from 'abcjs';
 import { parseHostMessage, sameContext, type DocumentMessage, type SourceStateMessage, type SourceHighlightRange, type PreviewContext, type WebviewMessage, type LinkageUnavailableReason } from '../core/messages';
 import { TuneSession, sameSnapshot } from '../core/tuneSession';
+import { defaultPracticeUiPreferences } from '../core/practice';
 import { tuneAtSource } from '../core/tunes';
 import { collectParseDiagnostics, type ParseDiagnostic } from '../core/diagnostics';
 import { toSourceRange, type MappedText } from '../core/sourceMap';
@@ -80,6 +81,11 @@ const voicesSummaryElement = queryElement('voices-summary');
 const voicesPauseButton = queryElement<HTMLButtonElement>('voices-pause');
 const voicesListElement = queryElement('voices-list');
 const voicesPanelElement = queryElement('voices-panel');
+const moreMenuElement = queryElement<HTMLDetailsElement>('more-menu');
+const moreSummaryElement = queryElement('more-summary');
+const morePanelElement = queryElement('more-panel');
+const resetPracticeButton = queryElement<HTMLButtonElement>('reset-practice');
+const resetPracticeNoteElement = queryElement('reset-practice-note');
 const progressElement = queryElement('progress');
 const progressFillElement = queryElement('progress-fill');
 const progressThumbElement = queryElement('progress-thumb');
@@ -150,6 +156,10 @@ type ProgressDrag = { fraction: number; phase: PlaybackPhase; sequence: number }
 let dragState: ProgressDrag | undefined;
 /** 播放中的进度轮询计时器（SPEC-PLAY-05）：非播放相位停止，不空转。 */
 let progressTimer: number | undefined;
+/** 本视图已应用首份文档，可以上报练习记录（SPEC-SET-02 / 08）。 */
+let practiceLoaded = false;
+/** 最近一次上报的练习记录序列化结果：设置未变不重复提交。 */
+let lastPracticeReport: string | undefined;
 
 // 宿主注入的配置（previewPanel 以 nonce 脚本写入）：本地音色根地址（SPEC-ENV-05 / 07）
 const webviewConfig = (window as unknown as { __abcdesk?: { soundfontUrl?: unknown } }).__abcdesk;
@@ -178,6 +188,8 @@ const keyboardView = new KeyboardView({
   leftArrow: queryElement('keyboard-hint-left'),
   rightArrow: queryElement('keyboard-hint-right'),
 });
+// 界面偏好变化（SPEC-SET-05）：与音乐设置走同一次全量上报
+keyboardView.onPreferencesChange = () => reportPracticeState();
 
 /** 按当前相位刷新按钮图标与提示、状态文案并上报播放状态（SPEC-PLAY-01 / 13）。 */
 function refreshPlaybackUi(): void {
@@ -223,6 +235,7 @@ function refreshPlaybackUi(): void {
   updateProgressPolling();
   // 宿主据此维持同一窗口内只有一处预览发声（SPEC-PLAY-01）
   post({ type: 'playback-state', state: phase });
+  reportPracticeState();
 }
 
 /** 速度控件刷新（SPEC-PLAY-04）：标签与当前值；输入框聚焦时不覆写正在编辑的内容。 */
@@ -397,6 +410,20 @@ function rememberSettings(): void {
   if (playable && session.selectionRequest === undefined) session.remember(controller.getSettings(), activeSignature);
 }
 
+/**
+ * 上报全量练习记录（SPEC-SET-03 ~ 08）：界面偏好取键盘视图，曲目记录取会话；
+ * 首份文档应用后才允许上报，状态未变不重复提交。
+ */
+function reportPracticeState(): void {
+  if (!practiceLoaded || context === undefined) return;
+  const ui = keyboardView.getPreferences();
+  const tunes = session.exportRecords();
+  const serialized = JSON.stringify({ ui, tunes });
+  if (serialized === lastPracticeReport) return;
+  lastPracticeReport = serialized;
+  post({ type: 'practice-state', ui, tunes });
+}
+
 function invalidateContext(message: DocumentMessage): void {
   context = { viewId: message.viewId, revision: message.revision, version: message.version, selection: (context?.selection ?? 0) + 1 };
   renderSequence += 1;
@@ -419,8 +446,16 @@ function renderAndReport(message: DocumentMessage, applied = false): void {
     rememberSettings();
     session.apply(message);
   }
-  const { initialRequest, ...snapshot } = message;
+  const { initialRequest, practice, ...snapshot } = message;
   currentDocument = snapshot; // 初始化意图只消费一次，不随取消选曲或重渲染复活。
+  // 已保存文件的练习记录只在视图首次应用时恢复（SPEC-SET-02 / 03 / 04 / 05）
+  if (!practiceLoaded) {
+    practiceLoaded = true;
+    if (practice !== undefined) {
+      session.restore(practice.tunes);
+      keyboardView.applyPreferences(practice.ui);
+    }
+  }
   pendingDocument = undefined;
   invalidateContext(message);
   controller.setTune(undefined);
@@ -486,6 +521,30 @@ function playbackAction(action: 'toggle' | 'pause' | 'stop'): void {
   refreshPlaybackUi();
   reportRendered();
   if (playable && targetOffset !== null) applyReadingMarker(targetOffset);
+}
+
+/**
+ * 重置本文件练习设置（SPEC-SET-07）：先暂停与取消待起播，再恢复界面与音乐默认值；
+ * 不修改 ABC、不自动起播、不新增命令，播放位置保持不变。
+ */
+function resetPractice(): void {
+  moreMenuElement.open = false;
+  const { phase } = controller.getStatus();
+  if (phase === 'playing' || phase === 'preparing' || session.selectionRequest !== undefined) {
+    playbackAction('pause');
+  }
+  session.clearRecords();
+  // 清空后强制重新上报一次默认状态，随后由宿主删除本文件记录
+  lastPracticeReport = undefined;
+  keyboardView.applyPreferences(defaultPracticeUiPreferences());
+  controller.setLoopEnabled(false);
+  controller.setSpeed(SPEED_DEFAULT);
+  controller.setChordsMuted(false);
+  for (const voice of controller.getVoices()) {
+    controller.setVoiceMuted(voice.index, false);
+  }
+  refreshPlaybackUi();
+  post({ type: 'reset-practice' });
 }
 
 /** 内容状态区（SPEC-STATE-08 / LIFE-04 / 06）：来源状态 / 旧谱参考 / 空状态 / 暂停后应用提示与入口。 */
@@ -1206,6 +1265,27 @@ voicesMenuElement.addEventListener('toggle', () => {
     voicesPanelElement.style.right = '0';
   }
 });
+// 更多菜单（SPEC-SET-07）：Esc 关闭并把焦点还给触发钮；右缘溢出时翻转
+moreMenuElement.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (event.key !== 'Escape' || !moreMenuElement.open) {
+    return;
+  }
+  moreMenuElement.open = false;
+  moreSummaryElement.focus();
+});
+moreMenuElement.addEventListener('toggle', () => {
+  morePanelElement.style.removeProperty('left');
+  morePanelElement.style.removeProperty('right');
+  if (!moreMenuElement.open) {
+    return;
+  }
+  const rect = morePanelElement.getBoundingClientRect();
+  if (rect.right > document.documentElement.clientWidth - 8) {
+    morePanelElement.style.left = 'auto';
+    morePanelElement.style.right = '0';
+  }
+});
+resetPracticeButton.addEventListener('click', resetPractice);
 // 进度条（SPEC-PLAY-05）：拖动预览、松手提交；取消拖动（Esc / pointercancel）不提交
 progressElement.addEventListener('pointerdown', (event: PointerEvent) => {
   if (event.button !== 0 || !playable) {
@@ -1341,6 +1421,11 @@ window.addEventListener('pagehide', () => {
 
 // 进度条无障碍名称（SPEC-PLAY-05 / P06 口径）
 progressElement.setAttribute('aria-label', t('progress-label'));
+// 更多菜单文案（SPEC-SET-07）：重置入口只作用于本文件，说明不会修改源文件
+moreSummaryElement.textContent = t('more');
+resetPracticeButton.textContent = t('reset-practice');
+resetPracticeButton.setAttribute('aria-label', t('reset-practice'));
+resetPracticeNoteElement.textContent = t('reset-practice-note');
 
 refreshPlaybackUi();
 updateContentStatus();

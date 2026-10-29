@@ -257,4 +257,50 @@ describe('严格身份与会话切换', () => {
     expect(session.current?.id).toBe('1');
     expect(session.settingsFor('v').settings.speed).toBe(60);
   });
+
+  it('[SPEC-SET-02] [SPEC-SET-03] 按真实 X: 恢复曲目设置，未匹配记录不应用', () => {
+    const session = new TuneSession();
+    session.receive(snapshot(), false);
+    session.restore([
+      { id: '2', signature: 'v2', settings: { speed: 60, loop: true, chordsMuted: false, mutedVoices: [1] } },
+      { id: 'missing', signature: 'other', settings: { speed: 40, loop: false, chordsMuted: false, mutedVoices: [] } },
+    ]);
+    expect(session.settingsFor('v1').settings).toEqual(defaultMusicSettings());
+    session.select(1);
+    expect(session.settingsFor('v2')).toEqual({
+      settings: { speed: 60, loop: true, chordsMuted: false, mutedVoices: [1] },
+      voicesChanged: false,
+    });
+    // 恢复的记录同样要核验有序声部清单：不一致时只清静音并提示
+    expect(session.settingsFor('changed')).toEqual({
+      settings: { speed: 60, loop: true, chordsMuted: false, mutedVoices: [] },
+      voicesChanged: true,
+    });
+  });
+
+  it('[SPEC-SET-04] 恢复时声部签名无法确认则清除静音并提示', () => {
+    const session = new TuneSession();
+    session.receive(snapshot(), false);
+    session.restore([{ id: '1', signature: null, settings: { speed: 80, loop: false, chordsMuted: true, mutedVoices: [] } }]);
+    expect(session.settingsFor(null)).toEqual({
+      settings: { speed: 80, loop: false, chordsMuted: true, mutedVoices: [] },
+      voicesChanged: true,
+    });
+  });
+
+  it('[SPEC-SET-08] 导出只含真实 X: 与轻量设置，重置清空全部曲目记录', () => {
+    const session = new TuneSession();
+    session.receive(snapshot(), false);
+    session.remember({ speed: 60, loop: true, chordsMuted: false, mutedVoices: [2, 0] }, 'v1');
+    session.select(1);
+    session.remember({ speed: 80, loop: false, chordsMuted: true, mutedVoices: [] }, null);
+    const exported = session.exportRecords();
+    expect(exported.map((entry) => entry.id)).toEqual(['1', '2']);
+    expect(exported[0]).toMatchObject({ signature: 'v1', settings: { speed: 60, mutedVoices: [0, 2] } });
+    // 无可靠签名时不留静音，避免下次恢复误套用
+    expect(exported[1]).toMatchObject({ signature: null, settings: { mutedVoices: [] } });
+    session.clearRecords();
+    expect(session.exportRecords()).toEqual([]);
+    expect(session.settingsFor('v1').settings).toEqual(defaultMusicSettings());
+  });
 });

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { synth } from 'abcjs';
 import type { PlaybackController } from '../src/webview/audio';
 import { parseWebviewMessage, type DocumentMessage, type WebviewMessage } from '../src/core/messages';
+import type { PracticeUiPreferences } from '../src/core/practice';
 
 const state = vi.hoisted(() => ({ controller: undefined as PlaybackController | undefined }));
 vi.mock('../src/webview/audio', async (original) => {
@@ -310,6 +311,76 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(context()).toEqual(before);
     expect(state.controller!.getSpeed()).toBe(75);
     expect(state.controller!.getProgress().positionMs).toBe(position);
+  });
+});
+
+describe('练习设置恢复与重置', () => {
+  const practice = (ui: PracticeUiPreferences = { keyboardCollapsed: false, keyboardMode: 'tune' }) => ({
+    version: 1 as const,
+    ui,
+    tunes: [{ id: '1', signature: null, settings: { speed: 70, loop: true, chordsMuted: true, mutedVoices: [0] } }],
+  });
+
+  it('[SPEC-SET-02] [SPEC-SET-03] [SPEC-SET-05] 首次推送恢复音乐设置与键盘偏好并回传', () => {
+    send({ ...snapshot(), practice: practice({ keyboardCollapsed: true, keyboardMode: 'full' }) });
+    expect(state.controller!.getSpeed()).toBe(70);
+    expect(state.controller!.getLoopEnabled()).toBe(true);
+    expect(state.controller!.getChordsMuted()).toBe(true);
+    // 无可靠声部签名：保留速度 / 循环 / 伴奏，但清除静音并提示重新检查
+    expect(state.controller!.getSettings().mutedVoices).toEqual([]);
+    expect(element('content-status').textContent).toContain('Voices have changed');
+    expect(element<HTMLSelectElement>('keyboard-range').value).toBe('full');
+    expect(element('keyboard-scroll').hidden).toBe(true);
+    const report = last('practice-state');
+    expect(report.ui).toEqual({ keyboardCollapsed: true, keyboardMode: 'full' });
+    // 核验后当前清单已知：记录改存本次计算的签名，静音保持清空
+    expect(report.tunes).toEqual([{ id: '1', signature: '[[null,null]]', settings: { speed: 70, loop: true, chordsMuted: true, mutedVoices: [] } }]);
+  });
+
+  it('[SPEC-SET-03] [SPEC-SET-05] 设置与键盘偏好变化全量上报，未变化不重复提交', () => {
+    send(snapshot());
+    const initial = sent.filter((message) => message.type === 'practice-state').length;
+    state.controller!.setSpeed(55);
+    const afterSpeed = sent.filter((message) => message.type === 'practice-state').length;
+    expect(afterSpeed).toBeGreaterThan(initial);
+    expect(last('practice-state').tunes.find((tune) => tune.id === '1')!.settings.speed).toBe(55);
+    state.controller!.setSpeed(55);
+    expect(sent.filter((message) => message.type === 'practice-state')).toHaveLength(afterSpeed);
+    click('keyboard-collapse');
+    expect(last('practice-state').ui.keyboardCollapsed).toBe(true);
+  });
+
+  it('[SPEC-SET-04] 恢复的声部清单不一致时只清静音，不重置其他设置', () => {
+    const voices = 'X:1\nV:top name="旋律"\nV:low name="伴奏"\nK:C\n[V:top] CDEF|\n[V:low] C,4|';
+    send({
+      ...snapshot(voices),
+      practice: { version: 1, ui: { keyboardCollapsed: false, keyboardMode: 'tune' }, tunes: [
+        { id: '1', signature: 'old-layout', settings: { speed: 60, loop: true, chordsMuted: true, mutedVoices: [0, 1] } },
+      ] },
+    });
+    expect(state.controller!.getSettings()).toEqual({ speed: 60, loop: true, chordsMuted: true, mutedVoices: [] });
+    expect(element('content-status').textContent).toContain('Voices have changed');
+  });
+
+  it('[SPEC-SET-07] 重置先暂停、恢复默认并清除本文件记录，不自动起播', async () => {
+    send({ ...snapshot(), practice: practice({ keyboardCollapsed: true, keyboardMode: 'full' }) });
+    await playing();
+    click('reset-practice');
+    expect(state.controller!.getStatus().phase).toBe('paused');
+    expect(state.controller!.getSpeed()).toBe(100);
+    expect(state.controller!.getLoopEnabled()).toBe(false);
+    expect(state.controller!.getChordsMuted()).toBe(false);
+    expect(state.controller!.getSettings().mutedVoices).toEqual([]);
+    expect(element<HTMLSelectElement>('keyboard-range').value).toBe('tune');
+    expect(element('keyboard-scroll').hidden).toBe(false);
+    expect(last('reset-practice').context.viewId).toBe(1);
+    const report = last('practice-state');
+    expect(report.ui).toEqual({ keyboardCollapsed: false, keyboardMode: 'tune' });
+    for (const tune of report.tunes) {
+      expect(tune.settings).toEqual({ speed: 100, loop: false, chordsMuted: false, mutedVoices: [] });
+    }
+    // 重置不触发起播：最后上报的播放状态仍为暂停
+    expect(last('playback-state').state).toBe('paused');
   });
 });
 
