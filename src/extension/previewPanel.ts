@@ -11,6 +11,7 @@ import {
   type PlayFromCursorMessage,
   type SourceHighlightRange,
   type SourceStateMessage,
+  type WebviewDiagnosticsMessage,
   type WebviewPlaybackStateMessage,
   type WebviewRenderedMessage,
   type WebviewRevealRangeMessage,
@@ -39,6 +40,11 @@ import {
  *   统一防抖 + 存在性复核 + 世代序号作废过期核验，短暂删除再创建不误判、乱序不误伤；
  * - 无可用编辑器缓冲区的删除 / 放弃转入来源不可用（SPEC-LIFE-06）：停音、只读参考、
  *   重新可读后重新获取并归零（SPEC-LIFE-07）；有缓冲区时只提示磁盘状态并继续按缓冲区预览。
+ *
+ * 解析诊断（SPEC-STATE-06）：
+ * - webview 只上报可连续映射到曲目原文的告警位置，不可靠定位留在预览详情；
+ * - 宿主按最近推送的版本与修订校验，晚到结果不恢复旧错误；每次渲染全量覆盖，空列表清除；
+ * - 可靠迁移时 Problems 条目跟随新 URI；只读来源与面板关闭时清除；不自动打开 Problems。
  *
  * 键盘可视化（SPEC-PLAY-08 / 09）与播放控件（速度 / 进度 / 声部，SPEC-PLAY-04 / 05 / 06）
  * 均在 webview 内实现：宿主只提供 DOM 骨架与样式，界面状态不新增消息
@@ -86,6 +92,8 @@ interface PanelEntry {
   sourceState: 'migrated' | 'unavailable' | 'disk-missing' | undefined;
   /** 迁移目标 URI（SPEC-LIFE-04）：状态页"打开目标预览"入口的目标，不接受 webview 提供的路径。 */
   migratedTo: string | undefined;
+  /** 已发布到 Problems 的诊断（SPEC-STATE-06）：迁移时随身份迁移，只读 / 关闭时清除。 */
+  diagnostics: vscode.Diagnostic[];
   /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立，改键 / 关闭时重建或释放。 */
   watcher: vscode.FileSystemWatcher | undefined;
 }
@@ -122,6 +130,8 @@ export class PreviewPanelManager implements vscode.Disposable {
     overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.infoForeground'),
     overviewRulerLane: vscode.OverviewRulerLane.Center,
   });
+  /** 解析诊断集合（SPEC-STATE-06）：按绑定文档键控，每次渲染全量覆盖，空列表即清除。 */
+  private readonly diagnostics = vscode.languages.createDiagnosticCollection('abcdesk');
 
   constructor(private readonly extensionUri: vscode.Uri) {
     // 可见编辑器变化时同步轮廓标记（SPEC-PLAY-11）：新可见的编辑器按当前目标区间重绘
@@ -570,6 +580,8 @@ export class PreviewPanelManager implements vscode.Disposable {
     entry.migratedTo = newKey;
     entry.watcher?.dispose();
     entry.watcher = undefined;
+    // 旧绑定已终止（SPEC-STATE-06）：来源页不再保留可进入 Problems 的旧诊断
+    this.clearEntryDiagnostics(entry);
     this.postPlayback(entry, 'pause');
     this.postSourceState(entry, 'migrated');
   }
@@ -608,6 +620,8 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.syncLinkedDecorations();
     entry.sourceState = 'unavailable';
     entry.migratedTo = undefined;
+    // 旧绑定已失效（SPEC-STATE-06）：清除该文档的问题条目
+    this.clearEntryDiagnostics(entry);
     this.postPlayback(entry, 'stop');
     this.postSourceState(entry, 'unavailable');
   }
@@ -621,6 +635,41 @@ export class PreviewPanelManager implements vscode.Disposable {
         : displayPathOf(vscode.Uri.parse(entry.uri));
     }
     void entry.panel.webview.postMessage({ type: 'source-state', viewId: entry.viewId, state, detail } satisfies SourceStateMessage);
+  }
+
+  /**
+   * 发布解析诊断（SPEC-STATE-06）：只接受与最近推送版本、修订一致的可靠位置；
+   * 晚到 / 已被取代的渲染结果不得恢复旧错误；空列表在 webview 清理后同步清除。
+   */
+  private applyDiagnostics(entry: PanelEntry, message: WebviewDiagnosticsMessage): void {
+    if (message.context.version !== entry.version || message.context.revision !== entry.revision) return;
+    if (this.isReadOnlyEntry(entry)) return;
+    const length = entry.lastPushedAbc?.length ?? 0;
+    entry.diagnostics = message.items
+      .filter((item) => item.end <= length)
+      .map((item) => {
+        const diagnostic = new vscode.Diagnostic(
+          new vscode.Range(entry.document.positionAt(item.start), entry.document.positionAt(item.end)),
+          vscode.l10n.t('ABC parse warning: {0}', item.message),
+          vscode.DiagnosticSeverity.Warning,
+        );
+        diagnostic.source = 'ABC Desk';
+        return diagnostic;
+      });
+    this.publishDiagnostics(entry);
+  }
+
+  /** 诊断按文档键控（SPEC-STATE-06）：空列表即清除，不保留已解决的诊断。 */
+  private publishDiagnostics(entry: PanelEntry): void {
+    const uri = vscode.Uri.parse(entry.uri);
+    if (entry.diagnostics.length === 0) this.diagnostics.delete(uri);
+    else this.diagnostics.set(uri, entry.diagnostics);
+  }
+
+  private clearEntryDiagnostics(entry: PanelEntry): void {
+    if (entry.diagnostics.length === 0) return;
+    entry.diagnostics = [];
+    this.diagnostics.delete(vscode.Uri.parse(entry.uri));
   }
 
   /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立；改键 / 迁移 / 释放时重建或 dispose。 */
@@ -762,13 +811,19 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 换键（SPEC-LIFE-03）：面板仍绑定同一练习，仅更新身份标识；观察器随键重建。 */
+  /** 换键（SPEC-LIFE-03）：面板仍绑定同一练习，仅更新身份标识；观察器与诊断随键迁移。 */
   private rekeyEntry(entry: PanelEntry, newKey: string): void {
+    const oldKey = entry.uri;
     this.panels.delete(entry.uri);
     this.clearUpdateTimer(entry.uri);
     entry.uri = newKey;
     this.panels.set(newKey, entry);
     this.attachWatcher(entry);
+    // 内容未变的可靠迁移不重渲染（SPEC-LIFE-03）：Problems 条目跟随同一练习的新身份
+    if (entry.diagnostics.length > 0) {
+      this.diagnostics.delete(vscode.Uri.parse(oldKey));
+      this.publishDiagnostics(entry);
+    }
   }
 
   private createPanel(document: vscode.TextDocument, request?: PendingRequest): void {
@@ -811,6 +866,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       phase: 'idle',
       sourceState: undefined,
       migratedTo: undefined,
+      diagnostics: [],
       watcher: undefined,
     };
     this.panels.set(entry.uri, entry);
@@ -825,8 +881,9 @@ export class PreviewPanelManager implements vscode.Disposable {
         // 防止迟到的 dispose 回调误删同文件的新面板
         if (this.panels.get(entry.uri) === entry) {
           this.panels.delete(entry.uri);
-          // 面板关闭后轮廓标记一并清除（SPEC-PLAY-11）
+          // 面板关闭后轮廓标记与解析诊断一并清除（SPEC-PLAY-11 / STATE-06）
           this.syncLinkedDecorations();
+          this.clearEntryDiagnostics(entry);
           this.clearSourceCheck(entry.uri);
         }
         entry.watcher?.dispose();
@@ -884,6 +941,13 @@ export class PreviewPanelManager implements vscode.Disposable {
           if (parsed.viewId === entry.viewId) this.revealMigratedTarget(entry);
           return;
         }
+        if (parsed.type === 'show-problems') {
+          // "查看问题"只打开宿主 Problems（SPEC-STATE-06）：不自动打开、不改变绑定与播放
+          if (parsed.viewId === entry.viewId && !this.isReadOnlyEntry(entry)) {
+            void vscode.commands.executeCommand('workbench.action.problems.focus');
+          }
+          return;
+        }
         const context = parsed.context;
         if (context.viewId !== entry.viewId) return;
         if (parsed.type === 'context-invalidated') {
@@ -913,6 +977,10 @@ export class PreviewPanelManager implements vscode.Disposable {
         }
         if (parsed.type === 'rendered') {
           this.handleRendered(entry, parsed);
+          return;
+        }
+        if (parsed.type === 'diagnostics') {
+          this.applyDiagnostics(entry, parsed);
           return;
         }
         if (parsed.type === 'play-from-selection-request') {
@@ -1401,6 +1469,13 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
     #content-status[hidden] { display: none; }
+    /* 解析诊断（SPEC-STATE-06）：摘要留在状态区，原始详情可展开；不可靠定位不显示行号 */
+    #view-problems[hidden], #diagnostics-details[hidden] { display: none; }
+    #diagnostics-details { flex-basis: 100%; }
+    #diagnostics-summary { cursor: pointer; width: fit-content; }
+    #diagnostics-list { margin: 4px 0 0; padding-left: 18px; }
+    #diagnostics-list li { margin: 2px 0; }
+    .abcdesk-diagnostic-detail { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); white-space: pre-wrap; }
     /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线；
        box-sizing 必须 border-box：abcjs responsive 会往容器写内联 width:100%，content-box 下再加 padding 就溢出撑宽 */
     #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; position: relative; box-sizing: border-box; }
@@ -1598,6 +1673,12 @@ export class PreviewPanelManager implements vscode.Disposable {
   <div id="score-region">
     <div id="content-status" role="status" aria-live="polite" hidden>
       <span id="content-status-text"></span>
+      <button id="view-problems" type="button" hidden></button>
+      <!-- 解析诊断详情（SPEC-STATE-06）：不可靠定位的告警只在这里展示，不编造行号 -->
+      <details id="diagnostics-details" hidden>
+        <summary id="diagnostics-summary"></summary>
+        <ul id="diagnostics-list"></ul>
+      </details>
       <button id="confirm-tune" type="button" hidden></button>
       <button id="reveal-source" type="button" hidden></button>
       <!-- 迁移状态页入口（SPEC-LIFE-04）：打开目标预览，不自动打开、不抢焦点 -->
@@ -1644,6 +1725,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.sourceGenerations.clear();
     this.sourceHighlight.dispose();
     this.linkedNote.dispose();
+    this.diagnostics.dispose();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }

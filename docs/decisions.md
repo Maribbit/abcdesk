@@ -2,6 +2,12 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-10-25 解析诊断与 Problems 发布
+
+- 决策：诊断只消费 abcjs `tune.warnings`（格式 `Music Line:<行>:<列>: <消息>:  <HTML 行摘录>`，行列 1-based、相对本曲输入），不二次解析 ABC。webview 把告警拆成摘要与行上下文（剥掉 HTML 与实体、不翻译、不显示 `Music Line:` 前缀），仅当行列能经 MappedText → toSourceRange 连续映射回曲目原文时上报可靠区间；继承头部（linkable=false）、合成字符、越界或无位置前缀的告警只留在状态区详情，不编造行号。宿主以 `context.version` / `revision` 与最近推送严格比对，晚到的渲染结果直接丢弃；每次渲染全量覆盖，空列表 `delete`；可靠迁移时删除旧 URI 后在新 URI 重发，迁移冲突 / 来源不可用 / 面板关闭时清除。“查看问题”只在存在可靠诊断时显示，点击才执行内置 `workbench.action.problems.focus`；不新增命令、不自动打开 Problems、不弹通知。单次最多 32 条。
+- 理由：abcjs 内部 `warningObjects` 的 `startChar` 未暴露到 TuneObject，`warnings` 字符串是唯一稳定可得的位置来源；行列必须再映射回原文才能进 Problems，否则违反 STATE-06“无法可靠定位时不编造行号”。严格版本比对沿用异步任务失效规则（STATE-02 / PERF-07），避免旧任务晚到恢复已修复的错误。全量覆盖让“修复后清除”无需增量 diff。按钮只在有可靠条目时出现，避免提供无内容可看的入口。
+- 影响：新增 `src/core/diagnostics.ts`（`parseAbcWarning` / `collectParseDiagnostics` / `MAX_PARSE_DIAGNOSTICS`）；`messages.ts` 增 `diagnostics` 与 `show-problems` 白名单及形状校验；`main.ts` 采集告警、状态区摘要 / 详情与上报；`previewPanel.ts` 新增 `createDiagnosticCollection('abcdesk')` 与按条目生命周期发布 / 清理；l10n 增 `ABC parse warning: {0}`（中英）与 webview 三键；新增 `test/diagnostics.test.ts`，扩展 messages / previewWebview / previewPanel 三处测试。F5 验收待执行（交接见 `docs/manual-checks.md`）。
+
 ## 2026-10-02 文件生命周期事件与来源状态机
 
 - 决策：绑定迁移以可靠事件为唯一依据——`onDidRenameFiles` 的新旧对（重命名 / 移动）、`onDidSaveTextDocument` 的对象身份（untitled 首次保存 = 同一 TextDocument 对象 URI 原地更新，接续；非 untitled 的 URI 变化 = 另存为，原预览仍绑原文件）、`onDidCloseTextDocument`（untitled 真正放弃转来源不可用；文件类触发磁盘复核）；每个绑定文件另建文件名转义的内容匹配 `FileSystemWatcher`（create / change / delete），覆盖外部进程写入与原子替换。核验统一走 300ms 防抖（SOURCE_CHECK_DEBOUNCE_MS）+ `fs.stat` 存在性复核 + 世代序号（换键 / 迁移 / 关闭时递增作废在途结果）；有可用编辑器缓冲区（`workspace.textDocuments` 按 URI 命中，插件缓存旧正文不算）时不判不可用，仅提示磁盘缺失并继续按缓冲区预览；无缓冲区且不可读才进入来源不可用，恢复时重读文件并与最近推送内容比对才换版。身份接续统一为"内容未变只更新身份"：continued 消息回显最近推送版本号，webview 据此保留暂停位置、设置与映射；内容是身份判定，容忍重开文档对象的版本号回归；内容变化按常规换版推送并归零。host 的播放 / 起播命令入口对只读来源状态直接拒绝。

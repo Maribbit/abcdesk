@@ -8,6 +8,8 @@ const env = vi.hoisted(() => ({
   openEditor: undefined as (() => Promise<Editor>) | undefined,
   files: new Map<string, string>(), statCalls: 0,
   watchers: [] as Array<{ create: () => void; change: () => void; delete: () => void; dispose: () => void }>,
+  diagnosticCalls: [] as Array<{ kind: string; uri: string; values: unknown[] }>,
+  commands: [] as string[],
 }));
 function uri(value: string): vscode.Uri {
   const scheme = value.slice(0, value.indexOf(':'));
@@ -63,8 +65,20 @@ vi.mock('vscode', () => ({
   ThemeColor: class { constructor(readonly id: string) {} },
   Range: class { constructor(readonly start: unknown, readonly end: unknown) {} },
   Selection: class { constructor(readonly anchor: unknown, readonly active: unknown) {} },
+  Diagnostic: class { source?: string; constructor(readonly range: unknown, readonly message: string, readonly severity: unknown) {} },
+  DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
   OverviewRulerLane: { Center: 2 }, ViewColumn: { One: 1, Beside: 2 }, TextEditorRevealType: { InCenterIfOutsideViewport: 1 },
-  env: { language: 'en' }, l10n: { t: (text: string) => text },
+  env: { language: 'en' },
+  l10n: { t: (text: string, ...args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)])) },
+  commands: { executeCommand: (id: string) => { env.commands.push(id); return Promise.resolve(); } },
+  languages: {
+    createDiagnosticCollection: () => ({
+      set: (target: { toString(): string }, values: unknown[]) => env.diagnosticCalls.push({ kind: 'set', uri: target.toString(), values }),
+      delete: (target: { toString(): string }) => env.diagnosticCalls.push({ kind: 'delete', uri: target.toString(), values: [] }),
+      clear: () => env.diagnosticCalls.push({ kind: 'clear', uri: '', values: [] }),
+      dispose: () => env.diagnosticCalls.push({ kind: 'dispose', uri: '', values: [] }),
+    }),
+  },
   workspace: {
     get textDocuments() { return env.documents; },
     createFileSystemWatcher: () => {
@@ -127,6 +141,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   env.panels = []; env.documents = []; env.editors = []; env.notices = []; env.openEditor = undefined;
   env.files = new Map(); env.statCalls = 0; env.watchers = [];
+  env.diagnosticCalls = []; env.commands = [];
   manager = new PreviewPanelManager(uri('file:///extension') as vscode.Uri);
   doc = new Doc();
   env.documents.push(doc);
@@ -439,5 +454,77 @@ describe('文件生命周期与来源状态', () => {
     manager.notifyDocumentChanged(asDocument(doc));
     await vi.advanceTimersByTimeAsync(300);
     expect(last(panel, 'document').version).toBe(2);
+  });
+});
+
+describe('解析诊断与问题入口', () => {
+  const item = { message: 'Unknown character ignored', start: 1, end: 2 };
+
+  it('[SPEC-STATE-06] 诊断按文档与版本发布，空列表与越界位置不保留', () => {
+    const panel = open(doc);
+    const context = applied(panel);
+    panel.received({ type: 'diagnostics', context, items: [item] });
+    const published = env.diagnosticCalls.at(-1)!;
+    expect(published).toMatchObject({ kind: 'set', uri: 'file:///book.abc' });
+    expect(published.values[0]).toMatchObject({
+      message: 'ABC parse warning: Unknown character ignored',
+      severity: 1,
+      source: 'ABC Desk',
+    });
+    // 过期 / 旧修订的晚到结果不覆盖当前诊断（SPEC-STATE-02 / 06）
+    panel.received({ type: 'diagnostics', context: { ...context, version: 99 }, items: [] });
+    expect(env.diagnosticCalls.at(-1)).toBe(published);
+    panel.received({ type: 'diagnostics', context: { ...context, revision: 9 }, items: [] });
+    expect(env.diagnosticCalls.at(-1)).toBe(published);
+    // 越界位置视为无效；全空即清除
+    panel.received({ type: 'diagnostics', context, items: [{ ...item, end: 9999 }] });
+    expect(env.diagnosticCalls.at(-1)).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
+    panel.received({ type: 'diagnostics', context, items: [] });
+    expect(env.diagnosticCalls.at(-1)).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
+  });
+
+  it('[SPEC-STATE-06] 内容未变的可靠迁移让 Problems 条目跟随新身份', async () => {
+    const panel = open(doc);
+    const context = applied(panel);
+    panel.received({ type: 'diagnostics', context, items: [item] });
+    const oldUri = doc.uri;
+    doc.uri = uri('file:///moved.abc');
+    manager.notifyFilesRenamed([{ oldUri, newUri: doc.uri }]);
+    await flush();
+    expect(env.diagnosticCalls.filter((call) => call.kind === 'delete').at(-1)?.uri).toBe('file:///book.abc');
+    expect(env.diagnosticCalls.filter((call) => call.kind === 'set').at(-1)?.uri).toBe('file:///moved.abc');
+    expect(last(panel, 'document').continued).toBe(true);
+  });
+
+  it('[SPEC-STATE-06] 迁移冲突转只读后清除并拒收旧绑定诊断', async () => {
+    const panel = open(doc);
+    const context = applied(panel);
+    panel.received({ type: 'diagnostics', context, items: [item] });
+    const target = new Doc('target');
+    env.documents.push(target);
+    const targetPanel = open(target);
+    const count = env.diagnosticCalls.length;
+    manager.notifyFilesRenamed([{ oldUri: doc.uri, newUri: target.uri }]);
+    await flush();
+    expect(last(panel, 'source-state').state).toBe('migrated');
+    expect(env.diagnosticCalls.slice(count)[0]).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
+    // 旧绑定的晚到诊断不重新进入 Problems，也不影响目标面板
+    const after = env.diagnosticCalls.length;
+    panel.received({ type: 'diagnostics', context, items: [item] });
+    expect(env.diagnosticCalls).toHaveLength(after);
+    expect(last(targetPanel, 'document').uri).toBe('file:///target.abc');
+  });
+
+  it('[SPEC-STATE-06] 面板关闭清除诊断，“查看问题”只执行宿主命令', () => {
+    const panel = open(doc);
+    const context = applied(panel);
+    panel.received({ type: 'diagnostics', context, items: [item] });
+    const viewId = context.viewId;
+    panel.received({ type: 'show-problems', viewId });
+    expect(env.commands).toEqual(['workbench.action.problems.focus']);
+    panel.received({ type: 'show-problems', viewId: viewId + 1 });
+    expect(env.commands).toEqual(['workbench.action.problems.focus']);
+    panel.dispose();
+    expect(env.diagnosticCalls.at(-1)).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
   });
 });

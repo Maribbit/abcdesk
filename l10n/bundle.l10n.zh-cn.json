@@ -9,6 +9,7 @@
   "The source document is unavailable.": "来源文档不可用。",
   "Please select a tune again.": "请重新选择曲目。",
   "Some tune boundaries could not be identified. Check the ABC source.": "部分曲目分界无法可靠识别，请检查 ABC 源码。",
+  "ABC parse warning: {0}": "ABC 解析告警：{0}",
   "Select a tune to export": "选择要导出的曲目",
   "Exporting MIDI…": "正在导出 MIDI…",
   "Exporting SVG…": "正在导出 SVG…",

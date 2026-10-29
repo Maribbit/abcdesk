@@ -9,6 +9,7 @@
   "The source document is unavailable.": "The source document is unavailable.",
   "Please select a tune again.": "Please select a tune again.",
   "Some tune boundaries could not be identified. Check the ABC source.": "Some tune boundaries could not be identified. Check the ABC source.",
+  "ABC parse warning: {0}": "ABC parse warning: {0}",
   "Select a tune to export": "Select a tune to export",
   "Exporting MIDI…": "Exporting MIDI…",
   "Exporting SVG…": "Exporting SVG…",

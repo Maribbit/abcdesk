@@ -2,6 +2,7 @@ import { renderAbc, type AbcElem, type NoteTimingEvent, type TuneObject } from '
 import { parseHostMessage, sameContext, type DocumentMessage, type SourceStateMessage, type SourceHighlightRange, type PreviewContext, type WebviewMessage, type LinkageUnavailableReason } from '../core/messages';
 import { TuneSession, sameSnapshot } from '../core/tuneSession';
 import { tuneAtSource } from '../core/tunes';
+import { collectParseDiagnostics, type ParseDiagnostic } from '../core/diagnostics';
 import { toSourceRange, type MappedText } from '../core/sourceMap';
 import { TunePicker, tuneLabel } from './tunePicker';
 import { sourceEvent, sourceRanges, validateSourceTarget } from './tuneSource';
@@ -26,6 +27,11 @@ import { SPEED_DEFAULT, formatClock, parseSpeedPercent, voiceSignature, type Voi
  * - 播放位置超出可视区域自动跟随滚动，手动滚动后暂停并显示"恢复跟随"；
  * - "从此处播放"按可靠映射定位起播，映射不可靠或联动停用时说明原因（不悄悄从头播放）；
  * - 控制区"从此处播放"按钮对当前目标音符起播（SPEC-PLAY-12），可用性随目标与联动状态刷新。
+ * 解析诊断（SPEC-STATE-06）：
+ * - abcjs 解析告警按当前曲目输入映射回原文；能连续映射的进入 Problems，其余只留在预览详情；
+ * - 状态区显示摘要与可展开的原始详情；不可靠定位不显示行号；
+ * - 每次渲染全量重算，只读来源页清空；"查看问题"只由用户主动打开 Problems。
+ *
  * 键盘（SPEC-PLAY-08 / 09 / 15、STATE-03 / 05）：
  * - 键盘默认按当前曲目材料音域（至少两个八度）、可切换完整 88 键与手动收起；
  *   播放高亮跟随演奏时间（含静音声部），视口外的提示音只显示方向箭头；
@@ -56,6 +62,10 @@ const stopButton = queryElement<HTMLButtonElement>('stop');
 const playbackStatusElement = queryElement('playback-status');
 const contentStatusElement = queryElement('content-status');
 const contentStatusTextElement = queryElement('content-status-text');
+const viewProblemsButton = queryElement<HTMLButtonElement>('view-problems');
+const diagnosticsDetails = queryElement<HTMLDetailsElement>('diagnostics-details');
+const diagnosticsSummary = queryElement('diagnostics-summary');
+const diagnosticsList = queryElement('diagnostics-list');
 const revealSourceButton = queryElement<HTMLButtonElement>('reveal-source');
 const revealTargetButton = queryElement<HTMLButtonElement>('reveal-target');
 const followResumeButton = queryElement<HTMLButtonElement>('follow-resume');
@@ -109,6 +119,8 @@ let sourceState: SourceStateMessage['state'] = 'available';
 let sourceDetail = '';
 /** 来源状态消息携带的实例编号：只读页在无文档上下文时用于"打开迁移后的预览"入口。 */
 let sourceStateViewId = 0;
+/** 最近一次渲染的解析诊断（SPEC-STATE-06）：全部留在预览详情，只有可靠定位项进入 Problems。 */
+let diagnostics: ParseDiagnostic[] = [];
 /** 谱面区是否已有成功渲染的谱面：渲染失败时据此决定保留参考还是错误占位（SPEC-STATE-03）。 */
 let hasRenderedScore = false;
 /** 当前版本的演奏时序（SPEC-PLAY-11 / 12）：字符↔音符↔元素映射的唯一依据，随渲染重建。 */
@@ -427,6 +439,7 @@ function renderAndReport(message: DocumentMessage, applied = false): void {
   tunePicker.update(session.catalog, session.selected);
   transaction = false;
   refreshPlaybackUi();
+  reportDiagnostics();
   reportRendered();
   if (initialOffset !== undefined) {
     applyReadingMarker(initialOffset);
@@ -486,7 +499,10 @@ function updateContentStatus(): void {
   if (contentStatusKey !== null) warnings.push(t(contentStatusKey));
   if (contentDetail) warnings.push(contentDetail);
   if (session.catalog.issues.length > 0 && contentStatusKey !== 'structure-unreliable') warnings.push(t('structure-unreliable'));
+  // 普通解析告警不阻止播放（SPEC-STATE-06）：只给摘要，详情在可展开区
+  if (diagnostics.length > 0) warnings.push(t('parse-warnings').replace('{0}', String(diagnostics.length)));
   contentStatusTextElement.textContent = warnings.filter(Boolean).join(' ');
+  renderDiagnostics();
   const revealTarget = sourceState === 'migrated';
   contentStatusElement.hidden = contentStatusTextElement.textContent === '' && !showRevealSource && !revealTarget;
   revealSourceButton.hidden = !showRevealSource;
@@ -501,6 +517,40 @@ function updateContentStatus(): void {
   }
   // 内容状态变化同时影响"从此处播放"可用性（待更新 / 旧谱参考，SPEC-PLAY-12）
   updatePlayFromHereButton();
+}
+
+/** 解析诊断详情（SPEC-STATE-06）：原始消息逐条展示，不显示 abcjs 的位置前缀或行号。 */
+function renderDiagnostics(): void {
+  diagnosticsSummary.textContent = t('diagnostics-details');
+  diagnosticsList.replaceChildren(...diagnostics.map((item) => {
+    const entry = document.createElement('li');
+    const message = document.createElement('span');
+    message.textContent = item.message;
+    entry.append(message);
+    if (item.detail !== '') {
+      const detail = document.createElement('div');
+      detail.className = 'abcdesk-diagnostic-detail';
+      detail.textContent = item.detail;
+      entry.append(detail);
+    }
+    return entry;
+  }));
+  diagnosticsDetails.hidden = diagnostics.length === 0;
+  // "查看问题"只在有可靠定位项时出现（SPEC-STATE-06）：触发后由用户自己打开 Problems
+  const reliable = diagnostics.some((item) => item.range !== undefined);
+  viewProblemsButton.hidden = !reliable;
+  if (reliable) {
+    viewProblemsButton.textContent = t('view-problems');
+    viewProblemsButton.setAttribute('aria-label', t('view-problems'));
+  }
+}
+
+/** 只上报可连续映射的诊断（SPEC-STATE-06）：不可靠项留在预览详情，不编写行号。 */
+function reportDiagnostics(): void {
+  const items = diagnostics.flatMap((item) => item.range === undefined
+    ? []
+    : [{ message: item.message.slice(0, 500), start: item.range.start, end: item.range.end }]);
+  post({ type: 'diagnostics', items });
 }
 
 /** 只读来源状态（SPEC-LIFE-04 / 06）：迁移状态页与来源不可用页，旧谱仅作参考。 */
@@ -531,10 +581,13 @@ function applySourceState(state: SourceStateMessage['state'], detail: string): v
   contentStatusKey = null;
   contentDetail = '';
   showRevealSource = false;
+  // 旧绑定已终止（SPEC-STATE-06）：旧谱参考不再保留可进入 Problems 的诊断
+  diagnostics = [];
   controller.setTune(undefined);
   tunePicker.setLocked(true);
   updateContentStatus();
   refreshPlaybackUi();
+  reportDiagnostics();
 }
 
 /** 来源恢复（SPEC-LIFE-07）：宿主明确推送文档即解除只读锁定，回到常规应用路径。 */
@@ -559,6 +612,8 @@ function showEmptyState(): void {
 /** 渲染所选曲目的自包含输入；旧谱的归属标签独立于当前选择。 */
 function renderDocument(message: DocumentMessage): boolean {
   contentDetail = '';
+  // 每次渲染全量重算解析诊断（SPEC-STATE-06）：旧版本 / 旧曲目的告警不得残留
+  diagnostics = [];
   if (session.catalog.tunes.length === 0 && session.catalog.issues.length === 0) {
     showEmptyState();
     return true;
@@ -581,6 +636,8 @@ function renderDocument(message: DocumentMessage): boolean {
       showUnavailableScore('no-notes');
       return false;
     }
+    // abcjs 的解析告警按当前曲目输入映射回原文（SPEC-STATE-06）：能连续映射的才进 Problems
+    diagnostics = collectParseDiagnostics(tune.warnings ?? [], selected.input);
     activeSignature = voiceSignature(tune, selected.input.text);
     const restored = session.settingsFor(activeSignature);
     controller.setTune(tune, restored.settings);
@@ -1106,6 +1163,8 @@ playFromHereButton.addEventListener('click', () => {
 revealSourceButton.addEventListener('click', () => { if (context !== undefined) host.postMessage({ type: 'reveal-source', viewId: context.viewId }); });
 // 迁移状态页"打开迁移后的预览"入口（SPEC-LIFE-04）：目标由宿主记录决定，webview 只发实例编号
 revealTargetButton.addEventListener('click', () => { host.postMessage({ type: 'reveal-target', viewId: context?.viewId ?? sourceStateViewId }); });
+// "查看问题"（SPEC-STATE-06）：只在用户点击时请求宿主打开 Problems，不自动弹窗、不抢焦点
+viewProblemsButton.addEventListener('click', () => { if (context !== undefined) host.postMessage({ type: 'show-problems', viewId: context.viewId }); });
 // “恢复跟随”（SPEC-PLAY-11）：立即回到当前播放位置并恢复自动跟随
 followResumeButton.addEventListener('click', () => {
   followPaused = false;

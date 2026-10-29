@@ -370,3 +370,45 @@ describe('来源状态与可靠迁移', () => {
     expect(element('content-status').textContent).not.toContain('/book.abc');
   });
 });
+
+describe('解析诊断与问题入口', () => {
+  const warningBook = 'X:1\nT:Warn\nK:C\nw: hello\nCDEF|';
+
+  it('[SPEC-STATE-06] 告警显示摘要与可展开详情，可靠位置上报且不阻止播放', () => {
+    send(snapshot(warningBook));
+    expect(element('content-status-text').textContent).toContain('1 parse warning(s)');
+    expect(element<HTMLDetailsElement>('diagnostics-details').hidden).toBe(false);
+    expect(element('diagnostics-summary').textContent).toBe('Details');
+    expect(element('diagnostics-list').textContent).toContain("Can't add words before the first line of music");
+    // 位置前缀与 HTML 不进入用户可见详情（不编造行号）
+    expect(element('diagnostics-list').textContent).not.toContain('Music Line:');
+    const report = last('diagnostics');
+    expect(report.items).toHaveLength(1);
+    expect(warningBook.slice(report.items[0].start, report.items[0].end)).toBe('w');
+    // 普通告警不阻止播放；查看问题只在可靠定位时出现，只回传实例编号
+    expect(element<HTMLButtonElement>('play').disabled).toBe(false);
+    expect(element('view-problems').hidden).toBe(false);
+    click('view-problems');
+    expect(sent.at(-1)).toEqual({ type: 'show-problems', viewId: 1 });
+  });
+
+  it('[SPEC-STATE-06] 新版本修复后诊断与入口一并清除', () => {
+    send(snapshot(warningBook));
+    expect(last('diagnostics').items).toHaveLength(1);
+    send(snapshot('X:1\nT:Warn\nK:C\nCDEF|', 2));
+    expect(last('diagnostics').items).toEqual([]);
+    expect(element('diagnostics-details').hidden).toBe(true);
+    expect(element('view-problems').hidden).toBe(true);
+    expect(element('content-status-text').textContent).not.toContain('parse warning');
+  });
+
+  it('[SPEC-STATE-06] 只读来源页清除旧诊断并隐藏问题入口', () => {
+    send(snapshot(warningBook));
+    expect(last('diagnostics').items).toHaveLength(1);
+    send({ type: 'source-state', viewId: 1, state: 'migrated', detail: 'moved.abc' });
+    expect(last('diagnostics').items).toEqual([]);
+    expect(element('diagnostics-details').hidden).toBe(true);
+    expect(element('view-problems').hidden).toBe(true);
+    expect(element<HTMLButtonElement>('play').disabled).toBe(true);
+  });
+});

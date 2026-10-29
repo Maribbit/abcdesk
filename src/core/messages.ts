@@ -13,6 +13,11 @@ export interface WebviewPlaybackStateMessage { type: 'playback-state'; context: 
 export interface WebviewRevealSourceMessage { type: 'reveal-source'; viewId: number }
 /** 迁移状态页"打开目标预览"入口（SPEC-LIFE-04）：只带实例编号，目标路径由宿主内部记录决定。 */
 export interface WebviewRevealTargetMessage { type: 'reveal-target'; viewId: number }
+/** 解析诊断（SPEC-STATE-06）：只含可靠定位项；不可靠项只留在预览详情，不进入 Problems。 */
+export interface WebviewDiagnosticItem { message: string; start: number; end: number }
+export interface WebviewDiagnosticsMessage { type: 'diagnostics'; context: PreviewContext; items: WebviewDiagnosticItem[] }
+/** "查看问题"入口（SPEC-STATE-06）：只打开 Problems，不改变绑定、播放或焦点以外的状态。 */
+export interface WebviewShowProblemsMessage { type: 'show-problems'; viewId: number }
 export interface WebviewRevealRangeMessage { type: 'reveal-range'; context: PreviewContext; requestId: number; start: number; end: number }
 export interface WebviewLinkageUnavailableMessage { type: 'linkage-unavailable'; context: PreviewContext; reason: LinkageUnavailableReason }
 export interface WebviewSourceHighlightMessage { type: 'source-highlight'; context: PreviewContext; ranges: SourceHighlightRange[] }
@@ -23,7 +28,7 @@ export interface WebviewSelectTuneMessage { type: 'select-tune'; context: Previe
 export type WebviewMessage = WebviewReadyMessage | WebviewRenderedMessage | WebviewPlaybackStateMessage |
   WebviewRevealSourceMessage | WebviewRevealTargetMessage | WebviewRevealRangeMessage | WebviewLinkageUnavailableMessage |
   WebviewSourceHighlightMessage | WebviewTargetRangesMessage | WebviewPlayFromSelectionRequestMessage |
-  WebviewContextInvalidatedMessage | WebviewSelectTuneMessage;
+  WebviewContextInvalidatedMessage | WebviewSelectTuneMessage | WebviewDiagnosticsMessage | WebviewShowProblemsMessage;
 
 export interface DocumentMessage {
   type: 'document';
@@ -81,6 +86,14 @@ function isRanges(value: unknown): value is SourceHighlightRange[] {
 function isReason(value: unknown): value is LinkageUnavailableReason {
   return value === 'no-mapping' || value === 'no-selection' || value === 'update-pending' || value === 'stale-score' || value === 'choose-tune' || value === 'structure-unreliable';
 }
+/** 诊断条数与文本长度上限：异常输入不撑大消息；位置必须是非空区间。 */
+function isDiagnosticItems(value: unknown): value is WebviewDiagnosticItem[] {
+  return Array.isArray(value) && value.length <= 32 && value.every((item) => {
+    const diagnostic = object(item);
+    return diagnostic !== undefined && typeof diagnostic.message === 'string' && diagnostic.message.length > 0 && diagnostic.message.length <= 500 &&
+      isSequence(diagnostic.start) && isSequence(diagnostic.end) && diagnostic.start < diagnostic.end;
+  });
+}
 
 export function parseWebviewMessage(value: unknown): WebviewMessage | undefined {
   const message = object(value);
@@ -88,6 +101,7 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
   if (message.type === 'ready') return { type: 'ready' };
   if (message.type === 'reveal-source' && isSequence(message.viewId)) return { type: 'reveal-source', viewId: message.viewId };
   if (message.type === 'reveal-target' && isSequence(message.viewId)) return { type: 'reveal-target', viewId: message.viewId };
+  if (message.type === 'show-problems' && isSequence(message.viewId)) return { type: 'show-problems', viewId: message.viewId };
   const context = parseContext(message.context);
   if (context === undefined) return undefined;
   switch (message.type) {
@@ -106,6 +120,9 @@ export function parseWebviewMessage(value: unknown): WebviewMessage | undefined 
     case 'target-ranges':
       return isRanges(message.ranges) ? { type: message.type, context, ranges: message.ranges.map(({ start, end }) => ({ start, end })) } : undefined;
     case 'linkage-unavailable': return isReason(message.reason) ? { type: message.type, context, reason: message.reason } : undefined;
+    case 'diagnostics':
+      return isDiagnosticItems(message.items)
+        ? { type: message.type, context, items: message.items.map(({ message: text, start, end }) => ({ message: text, start, end })) } : undefined;
     case 'play-from-selection-request':
     case 'select-tune': return isSequence(message.requestId) ? { type: message.type, context, requestId: message.requestId } : undefined;
     default: return undefined;

@@ -109,6 +109,30 @@ describe('双向消息白名单', () => {
   });
 });
 
+describe('解析诊断消息', () => {
+  it('[SPEC-STATE-06] 诊断只接受非空可靠区间与有限条数，查看问题只带实例编号', () => {
+    const item = { message: 'Unknown character ignored', start: 1, end: 2 };
+    expect(parseWebviewMessage({ type: 'diagnostics', context, items: [item] }))
+      .toEqual({ type: 'diagnostics', context, items: [item] });
+    expect(parseWebviewMessage({ type: 'diagnostics', context, items: [] }))
+      .toEqual({ type: 'diagnostics', context, items: [] });
+    expect(parseWebviewMessage({ type: 'diagnostics', context, items: [{ ...item, uri: 'ignored' }] }))
+      .toEqual({ type: 'diagnostics', context, items: [item] });
+    for (const bad of [
+      { ...item, message: '' },
+      { ...item, message: 3 },
+      { ...item, start: -1 },
+      { ...item, start: 2, end: 2 },
+      { ...item, end: 1.5 },
+    ]) expect(parseWebviewMessage({ type: 'diagnostics', context, items: [bad] })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'diagnostics', context, items: Array.from({ length: 33 }, () => item) })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'diagnostics', context, items: 'x' })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'diagnostics', items: [item] })).toBeUndefined();
+    expect(parseWebviewMessage({ type: 'show-problems', viewId: 2, path: 'ignored' })).toEqual({ type: 'show-problems', viewId: 2 });
+    expect(parseWebviewMessage({ type: 'show-problems', viewId: -1 })).toBeUndefined();
+  });
+});
+
 describe('文件生命周期消息', () => {
   it('[SPEC-LIFE-03] [SPEC-LIFE-04] 迁移标记、来源状态与目标入口形状校验', () => {
     expect(parseHostMessage({ ...document, continued: true })).toEqual({ ...document, continued: true });
