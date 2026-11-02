@@ -14,11 +14,11 @@ import {
   pianoOnlyTuneView,
 } from '../src/webview/playback';
 
-// 绑定见 docs/spec/play.md（PLAY-04 速度、PLAY-05 进度、PLAY-06 声部）；
-// PLAY 域为 manual 验证（登记见 docs/manual-checks.md），测试标题额外引用条目以便覆盖校验。
+// Bindings in docs/spec/play.md (PLAY-04 speed, PLAY-05 progress, PLAY-06 voices);
+// the PLAY domain is verified manually (registered in docs/manual-checks.md); test titles additionally reference the items for coverage checks.
 
-describe('速度换算与解析（SPEC-PLAY-04）', () => {
-  it('[SPEC-PLAY-04] 越界夹取到 25–200、取整，非数值回退默认', () => {
+describe('speed conversion and parsing (SPEC-PLAY-04)', () => {
+  it('[SPEC-PLAY-04] out-of-range values are clamped to 25–200 and rounded; non-numbers fall back to the default', () => {
     expect(clampSpeed(10)).toBe(SPEED_MIN);
     expect(clampSpeed(0)).toBe(SPEED_MIN);
     expect(clampSpeed(-40)).toBe(SPEED_MIN);
@@ -30,7 +30,7 @@ describe('速度换算与解析（SPEC-PLAY-04）', () => {
     expect(clampSpeed(Number.NaN)).toBe(SPEED_DEFAULT);
   });
 
-  it('[SPEC-PLAY-04] 输入解析：空值与非数字为 null（还原），越界夹取不判非法', () => {
+  it('[SPEC-PLAY-04] input parsing: empty and non-numeric give null (restore), out-of-range values are clamped rather than rejected', () => {
     expect(parseSpeedPercent('')).toBeNull();
     expect(parseSpeedPercent('   ')).toBeNull();
     expect(parseSpeedPercent('abc')).toBeNull();
@@ -43,25 +43,25 @@ describe('速度换算与解析（SPEC-PLAY-04）', () => {
     expect(parseSpeedPercent(' 80 ')).toBe(80);
   });
 
-  it('[SPEC-PLAY-04] 带拍提示：可靠换算时按速度缩放，曲中变速 / 非四分拍 / 无数据不显示', () => {
+  it('[SPEC-PLAY-04] BPM hint: scales with speed when the conversion is reliable; mid-tune tempo changes / non-quarter beats / missing data show nothing', () => {
     const base = { getBeatLength: () => 0.25, getBpm: () => 120, tempoLocations: {} };
     expect(beatHintFor(base, 100)).toBe(120);
     expect(beatHintFor(base, 75)).toBe(90);
     expect(beatHintFor(base, 150)).toBe(180);
-    // 曲首 Q:（键 0）视为统一速度（getBpm 已读 Q: 值）
+    // A Q: at the start of the tune (key 0) counts as a uniform tempo (getBpm already read the Q: value)
     expect(beatHintFor({ getBeatLength: () => 0.25, getBpm: () => 132, tempoLocations: { 0: 132 } }, 100)).toBe(132);
-    // 曲中变速：不显示猜测值
+    // Mid-tune tempo change: no guessed value is shown
     expect(beatHintFor({ ...base, tempoLocations: { 0: 132, 5: 88 } }, 100)).toBeNull();
     expect(beatHintFor({ ...base, tempoLocations: { 3: 88 } }, 100)).toBeNull();
-    // 非四分拍（复合拍等）：不换算
+    // Non-quarter beat (compound meter etc.): no conversion
     expect(beatHintFor({ ...base, getBeatLength: () => 0.375 }, 100)).toBeNull();
-    // 数据缺失：不显示
+    // Missing data: nothing shown
     expect(beatHintFor({ ...base, tempoLocations: undefined }, 100)).toBeNull();
   });
 });
 
-describe('进度时间显示（SPEC-PLAY-05）', () => {
-  it('[SPEC-PLAY-05] 毫秒按 M:SS 显示，负值与非有限值按 0', () => {
+describe('progress time display (SPEC-PLAY-05)', () => {
+  it('[SPEC-PLAY-05] milliseconds display as M:SS; negative and non-finite values display as 0', () => {
     expect(formatClock(0)).toBe('0:00');
     expect(formatClock(12_000)).toBe('0:12');
     expect(formatClock(59_999)).toBe('0:59');
@@ -72,15 +72,15 @@ describe('进度时间显示（SPEC-PLAY-05）', () => {
   });
 });
 
-describe('声部清单（SPEC-PLAY-06）', () => {
-  it('[SPEC-PLAY-06] 按演奏时序收集声部，名称取首个非空、跨行取最大计数', () => {
+describe('voice list (SPEC-PLAY-06)', () => {
+  it('[SPEC-PLAY-06] voices are collected in performance order, the name is the first non-empty one and the count is the maximum across lines', () => {
     const tune = {
       lines: [
-        // 第一行：一个谱表两个声部，首声部有名、次声部无名
+        // First line: one staff with two voices, the first named, the second unnamed
         { staff: [{ clef: { type: 'treble' }, voices: [{}, {}], title: ['Flute', undefined] }] },
-        // TAB 谱表跳过，不计入声部
+        // TAB staves are skipped and not counted as voices
         { staff: [{ clef: { type: 'TAB' }, voices: [{}, {}, {}], title: ['T1', 'T2', 'T3'] }] },
-        // 行内跨谱表继续计数；标题此前为空，此处补上非空名
+        // Counting continues across staves within a line; the title was empty before and is filled with a non-empty name here
         { staff: [{ clef: { type: 'treble' }, voices: [{}, {}], title: ['', ''] }, { clef: { type: 'bass' }, voices: [{}], title: ['Cello'] }] },
       ],
     };
@@ -92,7 +92,7 @@ describe('声部清单（SPEC-PLAY-06）', () => {
     ]);
   });
 
-  it('[SPEC-PLAY-06] 后续行的首个非空标题补上无名声部；空标题保持无名', () => {
+  it('[SPEC-PLAY-06] the first non-empty title on later lines fills in an unnamed voice; an empty title stays unnamed', () => {
     const tune = {
       lines: [
         { staff: [{ voices: [{}, {}] }] },
@@ -108,33 +108,33 @@ describe('声部清单（SPEC-PLAY-06）', () => {
   });
 });
 
-describe('和弦轨识别（SPEC-PLAY-06）', () => {
-  it('[SPEC-PLAY-06] 和弦轨按 channel 等于声部数识别，鼓轨与无额外轨不误判', () => {
+describe('chord track detection (SPEC-PLAY-06)', () => {
+  it('[SPEC-PLAY-06] the chord track is detected by channel equal to the voice count; drum tracks and no extra track are not misjudged', () => {
     const voices = [
       [{ cmd: 'program', channel: 0 }],
       [{ cmd: 'program', channel: 1 }],
     ];
-    // 和弦轨 channel = 声部数（2）
+    // Chord track channel = voice count (2)
     expect(hasChordTrack([...voices, [{ cmd: 'program', channel: 2 }]], 2)).toBe(true);
-    // 鼓轨 channel = 声部数 + 1，不是和弦轨
+    // Drum track channel = voice count + 1, not a chord track
     expect(hasChordTrack([...voices, [{ cmd: 'program', channel: 3, instrument: 128 }]], 2)).toBe(false);
-    // 无额外轨
+    // No extra track
     expect(hasChordTrack(voices, 2)).toBe(false);
-    // 额外轨首条不是 program（无和弦）
+    // The first event of the extra track is not a program (no chords)
     expect(hasChordTrack([...voices, [{ cmd: 'note', channel: 2 }]], 2)).toBe(false);
-    // 防御：非数组输入
+    // Defensive: non-array input
     expect(hasChordTrack(undefined, 2)).toBe(false);
   });
 });
 
-// 用真实复杂材料补充结构桩测试：只解析与展开事件，不创建 AudioContext 或下载音色。
+// Real complex material supplements the structural stub tests: parse and expand events only, without creating an AudioContext or downloading soundfonts.
 const originalSample = readFileSync(
   new URL('../samples/09-lanterns-on-the-tide.abc', import.meta.url),
   'utf8',
 );
 
-describe('09 原创曲目：多声部与混合拍号回归', () => {
-  it('[SPEC-PLAY-06] 无解析告警，四声部各 49 小节且逐小节时值一致', () => {
+describe('sample 09 original tune: multi-voice and mixed meter regression', () => {
+  it('[SPEC-PLAY-06] no parse warnings, four voices with 49 bars each and consistent per-bar durations', () => {
     const tunes = parseOnly(originalSample);
     expect(tunes).toHaveLength(1);
     const tune = tunes[0];
@@ -157,7 +157,7 @@ describe('09 原创曲目：多声部与混合拍号回归', () => {
         }
         for (const item of staff.voices?.[0] ?? []) {
           if (item.el_type === 'note') {
-            // abcjs 的连音时值另存在 tripletMultiplier；倚音不额外占用主音时值。
+            // abcjs keeps tuplet durations separately in tripletMultiplier; grace notes take no extra time from the main note.
             const note = item as AbcElem;
             if (note.startTriplet !== undefined) {
               multipliers[voiceIndex] = note.tripletMultiplier ?? 1;
@@ -178,13 +178,13 @@ describe('09 原创曲目：多声部与混合拍号回归', () => {
     for (const voiceBars of bars) {
       expect(voiceBars).toHaveLength(49);
       voiceBars.forEach((duration, index) => {
-        // 实写 26–33 为 4/4，其余为 6/8 或 3/4（以全音符为时值单位）。
-        expect(duration, `实写第 ${index + 1} 小节`).toBeCloseTo(index >= 25 && index < 33 ? 1 : 0.75);
+        // Written bars 26–33 are 4/4, the rest 6/8 or 3/4 (durations in whole-note units).
+        expect(duration, `written bar ${index + 1}`).toBeCloseTo(index >= 25 && index < 33 ? 1 : 0.75);
       });
     }
   });
 
-  it('[SPEC-PLAY-04] [SPEC-PLAY-05] 一二房反复与六段速度展开为约 108 秒的演奏', () => {
+  it('[SPEC-PLAY-04] [SPEC-PLAY-05] first/second endings and six tempo sections expand to a performance of about 108 seconds', () => {
     const tune = parseOnly(originalSample)[0];
     const firstNote = tune.lines.flatMap((line) => line.staff?.[0].voices?.[0] ?? [])
       .find((item) => item.el_type === 'note');
@@ -194,10 +194,10 @@ describe('09 原创曲目：多声部与混合拍号回归', () => {
       (event) => event.cmd === 'note' && event.startChar === firstNote?.startChar,
     );
     expect(firstOccurrences).toHaveLength(2);
-    // A 展开为 16 小节，其余五段各 8 小节；按段拍单位而非单一 BPM 计算参考时间。
+    // A expands to 16 bars, the other five sections 8 bars each; the reference time is computed per section beat unit, not from a single BPM.
     const expectedSeconds = 16 * 120 / 66 + 8 * 120 / 72 + 8 * 180 / 90
       + 8 * 240 / 108 + 8 * 120 / 66 + 8 * 120 / 56;
-    // 与 CreateSynth.prime 同口径：tempo 的拍单位并不恒为四分音符，不能直接按 240 / BPM 换算。
+    // Same gauge as CreateSynth.prime: the tempo's beat unit is not always a quarter note, so 240 / BPM cannot be used directly.
     const secondsPerWholeNote = tune.millisecondsPerMeasure() / 1000 / tune.getBarLength();
     expect(audio.totalDuration * secondsPerWholeNote).toBeCloseTo(expectedSeconds, 3);
     for (const track of audio.tracks.slice(0, 4)) {
@@ -206,7 +206,7 @@ describe('09 原创曲目：多声部与混合拍号回归', () => {
     }
   });
 
-  it('[SPEC-PLAY-06] [SPEC-PLAY-10] 自动和弦独立成轨，静音应答与织体不影响旋律和低音', () => {
+  it('[SPEC-PLAY-06] [SPEC-PLAY-10] automatic chords form their own track; muting answer and texture does not affect melody and bass', () => {
     const audio = parseOnly(originalSample)[0].setUpAudio({});
     expect(audio.tracks).toHaveLength(5);
     expect(hasChordTrack(audio.tracks, 4)).toBe(true);
@@ -222,11 +222,11 @@ describe('09 原创曲目：多声部与混合拍号回归', () => {
   });
 });
 
-// 播放侧音色问题回归（SPEC-ENV-07）：本地仅内置钢琴目录，合成器在 init 内部按展开产物的
-// instrument 请求音色样本、放置时静默跳过缺失音色——只改音序映射（sequenceCallback）不够，
-// 展开产物本身必须统一为钢琴，且原曲目对象保持材料指令（MIDI 导出依据，SPEC-EXP-05）。
-describe('统一钢琴的播放视图（SPEC-ENV-07）', () => {
-  /** 各轨首个 program 事件的乐器索引（音乐轨必有）；无 program 轨为 null。 */
+// Playback-side soundfont regression (SPEC-ENV-07): only the piano directory is bundled locally, and the synth requests soundfont samples inside init
+// from the expanded output's instrument, silently skipping missing instruments when placing - remapping the sequence (sequenceCallback) alone is not enough,
+// the expanded output itself must be unified to piano while the original tune object keeps the material's directives (basis for MIDI export, SPEC-EXP-05).
+describe('piano-unified playback view (SPEC-ENV-07)', () => {
+  /** Instrument index of each track's first program event (music tracks always have one); null for tracks without a program. */
   function trackInstruments(audio: AudioTracks): Array<number | null> {
     return audio.tracks.map((track) => {
       const program = track.find((item) => item.cmd === 'program');
@@ -234,8 +234,8 @@ describe('统一钢琴的播放视图（SPEC-ENV-07）', () => {
     });
   }
 
-  it('[SPEC-ENV-07] 展开产物的乐器指令全部归一为钢琴，原曲目对象保持材料指令', () => {
-    // 03 的声部内 %%MIDI program（钢琴外音色）与 09 的曲首 %%MIDI program 73 是两条已知归宿路径
+  it('[SPEC-ENV-07] all instrument directives in the expanded output are unified to piano, the original tune object keeps the material directives', () => {
+    // The in-voice %%MIDI program (non-piano) in sample 03 and the tune-level %%MIDI program 73 in sample 09 are the two known paths
     for (const name of ['03-voices-midi.abc', '09-lanterns-on-the-tide.abc']) {
       const source = readFileSync(new URL(`../samples/${name}`, import.meta.url), 'utf8');
       const tune = parseOnly(source)[0];
@@ -249,7 +249,7 @@ describe('统一钢琴的播放视图（SPEC-ENV-07）', () => {
           }
         }
       }
-      // 播放视图不得改动原曲目：材料中的乐器指令原样保留
+      // The playback view must not modify the original tune: instrument directives in the material are kept as is
       expect(trackInstruments(tune.setUpAudio({}))).toEqual(original);
     }
   });

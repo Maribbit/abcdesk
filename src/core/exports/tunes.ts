@@ -1,30 +1,30 @@
 /**
- * 曲目解析（SPEC-EXP-02）：把导出源文本拆分为可独立导出的曲目列表。
+ * Tune parsing (SPEC-EXP-02): split the export source text into independently exportable tunes.
  *
- * 每个曲目的 abc 是自包含文本：含自身 `X:` 行，首曲之前的文件级 `%%` 指令
- * 已由 abcjs 并入其中（实证于 abc_parse_book.js：tune.abc = directives + tune），
- * 因此不要另拼 TuneBook.header，否则指令会重复。
- * 判空使用与预览空状态一致的判据（SPEC-STATE-05）：
- * 空白文本也会解析出一首空曲目，不能以曲目数量或文本长度判空。
+ * Each tune's abc is self-contained: it has its own `X:` line, and file-level `%%` directives before the first tune
+ * are already merged in by abcjs (verified in abc_parse_book.js: tune.abc = directives + tune),
+ * so TuneBook.header must not be prepended again or the directives would be duplicated.
+ * Emptiness uses the same criterion as the preview empty state (SPEC-STATE-05):
+ * blank text also parses into one empty tune, so tune count or text length cannot decide emptiness.
  */
 import type { TuneObject } from 'abcjs';
 import { loadAbcjs } from './abcjs';
 
-/** 导出用曲目：可直接独立渲染 / 生成的完整文本。 */
+/** Tune for export: complete text that can be rendered / generated on its own. */
 export interface ExportTune {
-  /** 文档内序号（从 1 开始）。 */
+  /** Index within the document (1-based). */
   sequence: number;
-  /** `X:` 字段值；缺省为空字符串。 */
+  /** `X:` field value; empty string when absent. */
   id: string;
-  /** `T:` 字段值；缺省为空字符串。 */
+  /** `T:` field value; empty string when absent. */
   title: string;
-  /** 曲目在源文本中的起始偏移（SPEC-EXP-02：预选光标所属曲目的依据）。 */
+  /** Start offset of the tune in the source text (SPEC-EXP-02: used to preselect the tune under the cursor). */
   startPos: number;
-  /** 曲目完整文本（含 `X:` 行；文件级 `%%` 指令已并入），不含其他曲目。 */
+  /** Full tune text (with the `X:` line; file-level `%%` directives merged in), excluding other tunes. */
   abc: string;
 }
 
-/** 解析导出源文本（SPEC-EXP-02）：返回按出现顺序的曲目列表。 */
+/** Parse the export source text (SPEC-EXP-02): returns the tunes in order of appearance. */
 export async function listTunes(abcText: string): Promise<ExportTune[]> {
   const abcjs = await loadAbcjs();
   const book = new abcjs.TuneBook(abcText);
@@ -38,8 +38,8 @@ export async function listTunes(abcText: string): Promise<ExportTune[]> {
 }
 
 /**
- * 谱面是否含可显示的音符（SPEC-STATE-05 判据）：休止符（rest）也是 note 条目，
- * 合法全休止符不算空白内容（SPEC-EXP-08），只有完全无音符材料才不生成导出。
+ * Whether the score contains displayable notes (SPEC-STATE-05 criterion): rests are also note entries,
+ * so a valid whole-measure rest is not empty content (SPEC-EXP-08); only a total absence of note material skips the export.
  */
 export function tuneHasNotes(tune: TuneObject): boolean {
   for (const line of tune.lines ?? []) {

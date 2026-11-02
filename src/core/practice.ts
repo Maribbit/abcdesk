@@ -1,10 +1,10 @@
 /**
- * SPEC-SET-02 ~ 08：跨会话练习设置的记录模型、校验与合并。
+ * SPEC-SET-02 ~ 08: record model, validation and merging for cross-session practice settings.
  *
- * 只保存文件 / 曲目 / 声部标识与轻量设置，不写 ABC、学习记录或播放位置；
- * 记录以文件 URI 为键保存在扩展的 workspaceState（P04 决议），
- * 多窗口按文件分键、静默后写覆盖（P05 决议）。校验失败时整体回退默认值，
- * 不删除原始记录（无效记录安全回退，不自动清理）。
+ * Only file / tune / voice identifiers and lightweight settings are stored; no ABC, learning notes or playback position.
+ * Records are keyed by file URI in the extension's workspaceState (decision P04);
+ * multiple windows use separate keys per file with silent last-write-wins (decision P05). A failed validation
+ * falls back to defaults as a whole without deleting the original record (safe fallback, no automatic cleanup).
  */
 
 export const PRACTICE_SCHEMA_VERSION = 1;
@@ -17,7 +17,7 @@ export const SPEED_MAX = 200;
 
 export type KeyboardMode = 'tune' | 'full';
 
-/** 曲目级音乐设置（SPEC-SET-03 / 04）：声部静音仅在签名核验一致时恢复。 */
+/** Per-tune musical settings (SPEC-SET-03 / 04): voice mutes are restored only when the signature check matches. */
 export interface PracticeSettings {
   speed: number;
   loop: boolean;
@@ -25,14 +25,14 @@ export interface PracticeSettings {
   mutedVoices: number[];
 }
 
-/** 曲目记录：id 取自真实且唯一的 X:（SPEC-SET-03），signature 为有序声部清单。 */
+/** Tune record: id comes from a real and unique X: (SPEC-SET-03); signature is the ordered voice list. */
 export interface PracticeTuneRecord {
   id: string;
   signature: string | null;
   settings: PracticeSettings;
 }
 
-/** 文件级界面偏好（SPEC-SET-05）：速度等音乐设置按曲目另存。 */
+/** File-level UI preferences (SPEC-SET-05): musical settings such as speed are stored per tune. */
 export interface PracticeUiPreferences {
   keyboardCollapsed: boolean;
   keyboardMode: KeyboardMode;
@@ -48,7 +48,7 @@ export function defaultPracticeUiPreferences(): PracticeUiPreferences {
   return { keyboardCollapsed: false, keyboardMode: 'tune' };
 }
 
-/** 记录键（P05 决议）：按文件分键，多窗口改不同文件互不影响。 */
+/** Record key (decision P05): keyed per file so that windows editing different files do not interfere. */
 export function practiceStorageKey(uri: string): string {
   return `abcdesk.practice.v${PRACTICE_SCHEMA_VERSION}:${uri}`;
 }
@@ -89,8 +89,8 @@ function parseSettings(value: unknown): PracticeSettings | undefined {
 }
 
 /**
- * 校验并规范化持久记录（SPEC-SET-08）：形状、范围、标识唯一性任一不符即整体回退；
- * 声部签名为 null（无法可靠识别）时不保留静音覆盖——恢复时无法核验同一清单。
+ * Validate and normalize a persisted record (SPEC-SET-08): any mismatch in shape, range or id uniqueness falls back as a whole;
+ * when the voice signature is null (not reliably identifiable) the mute overrides are dropped - they cannot be verified against the same list on restore.
  */
 export function parsePracticeRecord(value: unknown): PracticeRecord | undefined {
   const record = object(value);
@@ -117,8 +117,8 @@ export function parsePracticeRecord(value: unknown): PracticeRecord | undefined 
 }
 
 /**
- * 合并一次提交（P05 决议）：同一曲目以新记录覆盖，未提及的旧曲目保留——
- * 暂时空白 / 解析失败不擦历史，也不做自动清理；界面偏好取最新提交。
+ * Merge one submission (decision P05): the same tune is overwritten by the new record, tunes not mentioned are kept -
+ * a temporarily blank document or parse failure does not wipe history, and nothing is cleaned up automatically; UI preferences take the latest submission.
  */
 export function mergePracticeRecords(base: PracticeRecord | undefined, incoming: PracticeRecord): PracticeRecord {
   const merged = new Map<string, PracticeTuneRecord>();

@@ -2,32 +2,32 @@ import { t } from './l10n';
 import type { PracticeUiPreferences } from '../core/practice';
 
 /**
- * 钢琴键盘可视化（SPEC-PLAY-08 / 09 / 15、SPEC-STATE-03 / 05）与音域算法。
+ * Piano keyboard visualization (SPEC-PLAY-08 / 09 / 15, SPEC-STATE-03 / 05) and range algorithms.
  *
- * - 音域算法（computeTuneRange / keyPitches / computeKeyMetrics 等）为纯函数，
- *   由 test/keyboard.test.ts 真实覆盖（SPEC-PLAY-08）；视图类 KeyboardView 只做 DOM；
- * - 键盘纯可视（SPEC-PLAY-09）：琴键不进入 Tab 顺序、不提供点击试听、不呈现可演奏按钮，
- *   可访问描述由滚动容器承载（SPEC-A11Y-13 / 15）；
- * - 播放高亮经由 setActivePitches 跟随演奏时间，键表内高亮、视口外的提示音只显示方向箭头，
- *   不自动横移、不把手动浏览拉回（SPEC-PLAY-08）；
- * - 查阅 / 点选反射（SPEC-PLAY-15）经 setPointedPitches 以查阅色突出对应琴键，与播放高亮独立，
- *   同一键同时命中时由 CSS 规则让播放色优先。
+ * - The range algorithms (computeTuneRange / keyPitches / computeKeyMetrics, etc.) are pure functions,
+ *   really covered by test/keyboard.test.ts (SPEC-PLAY-08); the KeyboardView class only touches the DOM;
+ * - the keyboard is purely visual (SPEC-PLAY-09): keys are not in the Tab order, offer no click audition and are not playable buttons;
+ *   the accessible description lives on the scroll container (SPEC-A11Y-13 / 15);
+ * - playback highlighting follows performance time via setActivePitches; hints outside the viewport only show direction arrows,
+ *   with no automatic horizontal scrolling and no pulling back of manual browsing (SPEC-PLAY-08);
+ * - inspection / click reflection (SPEC-PLAY-15) highlights the matching keys in the inspection color via setPointedPitches, independent of playback highlighting;
+ *   when the same key is hit by both, a CSS rule lets the playback color win.
  */
 
-/** 键盘音域模式（SPEC-PLAY-08 / SET-05）：乐曲 = 当前曲目材料音域，完整 88 键 = A0–C8。 */
+/** Keyboard range mode (SPEC-PLAY-08 / SET-05): tune = range of the current tune's material, full 88 keys = A0-C8. */
 export type KeyboardRangeMode = 'tune' | 'full';
 
-/** A0–C8 的 MIDI 音边界（SPEC-PLAY-08）：完整 88 键的可视范围。 */
+/** MIDI pitch bounds of A0-C8 (SPEC-PLAY-08): the visible range of the full 88 keys. */
 export const PIANO_MIN_PITCH = 21;
 export const PIANO_MAX_PITCH = 108;
 
-/** 中央 C 的 MIDI 音（SPEC-PLAY-08：中央 C 标为 C4；音名按科学音高记法推算）。 */
+/** MIDI pitch of middle C (SPEC-PLAY-08: middle C is labelled C4; note names follow scientific pitch notation). */
 export const MIDDLE_C_PITCH = 60;
 
-/** 材料音域下限（SPEC-PLAY-08：至少保留两个八度的参照空间）。 */
+/** Lower bound of the material range (SPEC-PLAY-08: keep at least two octaves of reference space). */
 export const MIN_SPAN_SEMITONES = 24;
 
-/** 白键最小宽度（SPEC-PLAY-08：窄窗口保持可辨认键宽，放不下宁横滚不压缩）。 */
+/** Minimum white-key width (SPEC-PLAY-08: keep keys recognizable in narrow windows; scroll horizontally rather than compress). */
 export const MIN_WHITE_KEY_WIDTH = 20;
 
 const MIN_WHITE_KEY_HEIGHT = 52;
@@ -37,7 +37,7 @@ const BLACK_KEY_WIDTH_RATIO = 0.6;
 const BLACK_KEY_HEIGHT_RATIO = 0.62;
 const KEYBOARD_HORIZONTAL_PADDING = 16;
 
-/** 无音高材料（全休止符等）的默认参照音域 C3–C5（SPEC-STATE-05：键盘可说明没有音高提示）。 */
+/** Default reference range C3-C5 for material without pitches (whole rests, etc.) (SPEC-STATE-05: the keyboard can state there are no pitch hints). */
 const EMPTY_TUNE_START = 48;
 const EMPTY_TUNE_END = 72;
 
@@ -46,14 +46,14 @@ export interface TuneRange {
   end: number;
 }
 
-/** 演奏时序事件里可提取的材料音高（结构类型，避免在纯逻辑模块 import abcjs）。 */
+/** Material pitch extractable from performance timing events (structural type to avoid importing abcjs in a pure-logic module). */
 export interface PitchCarrier {
   midiPitches?: ReadonlyArray<{ pitch?: number }>;
 }
 
 /**
- * 材料音高集合（SPEC-PLAY-08）：当前曲目整首记谱材料去重排序；含静音声部
- * （静音只作用于发声轨，不改变时序事件里的音高），不合并文件内其他曲目。
+ * Material pitch set (SPEC-PLAY-08): the whole current tune's notated material, deduplicated and sorted; includes muted voices
+ * (muting only affects sounding tracks, not the pitches in timing events); other tunes in the file are not merged.
  */
 export function collectPitches(events: ReadonlyArray<PitchCarrier>): number[] {
   const pitches = new Set<number>();
@@ -68,8 +68,8 @@ export function collectPitches(events: ReadonlyArray<PitchCarrier>): number[] {
 }
 
 /**
- * 乐曲模式的音域（SPEC-PLAY-08）：最小～最大音居中扩展至至少两个八度，再夹取到 A0–C8；
- * 无音高材料返回默认两八度参照音域；超出 A0–C8 的音不参与区间（由说明行单独提示、不折返）。
+ * Range in tune mode (SPEC-PLAY-08): min-max expanded around the centre to at least two octaves, then clamped to A0-C8;
+ * material without pitches returns the default two-octave reference range; pitches outside A0-C8 are excluded from the interval (reported by the note line, not folded).
  */
 export function computeTuneRange(pitches: ReadonlyArray<number>): TuneRange {
   if (pitches.length === 0) {
@@ -101,14 +101,14 @@ export function computeTuneRange(pitches: ReadonlyArray<number>): TuneRange {
   };
 }
 
-/** 超出 A0–C8 的音高（SPEC-PLAY-08）：不折返到其他八度，由说明行明确提示。 */
+/** Pitches outside A0-C8 (SPEC-PLAY-08): not folded into another octave; the note line states them explicitly. */
 export function outOfRangePitches(pitches: ReadonlyArray<number>): number[] {
   return [...new Set(pitches.filter((pitch) => pitch < PIANO_MIN_PITCH || pitch > PIANO_MAX_PITCH))].sort(
     (first, second) => first - second,
   );
 }
 
-/** 当前音域模式的键表（SPEC-PLAY-08）：完整 88 键固定 A0–C8，乐曲模式取计算音域。 */
+/** Key list for the current range mode (SPEC-PLAY-08): full 88 keys is fixed A0-C8, tune mode uses the computed range. */
 export function keyPitches(mode: KeyboardRangeMode, tuneRange: TuneRange): number[] {
   const start = mode === 'full' ? PIANO_MIN_PITCH : tuneRange.start;
   const end = mode === 'full' ? PIANO_MAX_PITCH : tuneRange.end;
@@ -119,12 +119,12 @@ export function keyPitches(mode: KeyboardRangeMode, tuneRange: TuneRange): numbe
   return pitches;
 }
 
-/** 黑键判据（12 平均律，C 大调钢琴布局）。 */
+/** Black-key test (12-tone equal temperament, C-major piano layout). */
 export function isBlackKey(pitch: number): boolean {
   return [1, 3, 6, 8, 10].includes(((pitch % 12) + 12) % 12);
 }
 
-/** 音名（SPEC-PLAY-08：标记各 C 的八度、中央 C 标为 C4）。 */
+/** Note name (SPEC-PLAY-08: label each C with its octave, middle C as C4). */
 export function pitchName(pitch: number): string {
   const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   const octave = Math.floor(pitch / 12) - 1;
@@ -139,7 +139,7 @@ export interface KeyMetrics {
   blackOffset: number;
 }
 
-/** 键尺寸（SPEC-PLAY-08）：按可视宽度摊白键宽并保底最小宽度（放不下宁横滚不压缩），黑键按比例。 */
+/** Key metrics (SPEC-PLAY-08): spread white-key width over the visible width with a minimum (scroll rather than compress); black keys proportional. */
 export function computeKeyMetrics(availableWidth: number, whiteCount: number): KeyMetrics {
   const usable = Math.max(0, availableWidth - KEYBOARD_HORIZONTAL_PADDING);
   const whiteWidth = Math.max(MIN_WHITE_KEY_WIDTH, usable / Math.max(1, whiteCount));
@@ -157,7 +157,7 @@ export function computeKeyMetrics(availableWidth: number, whiteCount: number): K
   };
 }
 
-/** 键盘视图依赖的 DOM 元素（由 previewPanel 的 HTML 提供；缺失时构造抛出，与 queryElement 同策略）。 */
+/** DOM elements the keyboard view depends on (provided by previewPanel's HTML; the constructor throws when missing, same policy as queryElement). */
 export interface KeyboardElements {
   section: HTMLElement;
   caption: HTMLElement;
@@ -171,26 +171,26 @@ export interface KeyboardElements {
 }
 
 /**
- * 键盘视图（SPEC-PLAY-08 / 09 / 15）：负责键表构建、音域 / 收起两个独立状态、
- * 播放高亮、查阅 / 点选反射与方向箭头；不含音频，不做布局重排通知（低高度由内容整体滚动承接）。
+ * Keyboard view (SPEC-PLAY-08 / 09 / 15): builds the key list, keeps range / collapsed as two independent states,
+ * handles playback highlighting, inspection / click reflection and direction arrows; no audio and no relayout notification (low heights are handled by scrolling the whole content).
  */
 export class KeyboardView {
   private readonly elements: KeyboardElements;
   private readonly keyElements = new Map<number, HTMLElement>();
-  /** 音域选择的包裹 label（收起时一并隐藏，dock 条只留说明与展开入口）。 */
+  /** Wrapper label of the range selector (hidden together when collapsed; the dock bar keeps only the note and the expand entry). */
   private readonly rangeLabel: HTMLElement | null;
 
   private mode: KeyboardRangeMode = 'tune';
-  /** 手动收起（SPEC-PLAY-08）：同一预览内不因播放或声部切换而展开。 */
+  /** Manually collapsed (SPEC-PLAY-08): within the same preview, playback or voice changes do not expand it. */
   private collapsed = false;
-  /** 是否已有可显示的材料（空状态 / 首次渲染失败时整个键盘区隐藏）。 */
+  /** Whether displayable material exists (the whole keyboard area is hidden in the empty state / on first render failure). */
   private hasTune = false;
   private tunePitches: number[] = [];
   private tuneRange: TuneRange = { start: EMPTY_TUNE_START, end: EMPTY_TUNE_END };
   private activePitches: number[] = [];
-  /** 查阅 / 点选反射（SPEC-PLAY-15）：光标或点选命中的音高，与播放高亮独立。 */
+  /** Inspection / click reflection (SPEC-PLAY-15): pitches hit by the cursor or a click, independent of playback highlighting. */
   private pointedPitches: number[] = [];
-  /** 用户改变收起 / 音域后通知调用方保存（SPEC-SET-05）；恢复偏好时不触发。 */
+  /** Notify the caller to save after the user changes collapsed / range (SPEC-SET-05); not fired when restoring preferences. */
   onPreferencesChange: (() => void) | undefined;
 
   constructor(elements: KeyboardElements) {
@@ -200,7 +200,7 @@ export class KeyboardView {
     elements.rangeSelect.addEventListener('change', () => this.setMode(readMode(elements.rangeSelect)));
     elements.collapseButton.addEventListener('click', () => this.setCollapsed(!this.collapsed));
     elements.scroll.addEventListener('scroll', () => this.updateArrows());
-    // 面板尺寸变化：只重算键尺寸与方向提示，不改变滚动位置（不把手动浏览拉回，SPEC-PLAY-08）
+    // Panel resize: recompute only key metrics and direction hints, keep the scroll position (do not pull back manual browsing, SPEC-PLAY-08)
     new ResizeObserver(() => {
       this.refreshSize();
       this.updateArrows();
@@ -208,7 +208,7 @@ export class KeyboardView {
     this.updateVisibility();
   }
 
-  /** 采用新版本的材料音高（SPEC-PLAY-08）：重算音域与键表，动态高亮随新版本重建。 */
+  /** Adopt the new version's material pitches (SPEC-PLAY-08): recompute range and key list; dynamic highlighting is rebuilt with the new version. */
   setTune(pitches: ReadonlyArray<number>): void {
     this.tunePitches = [...pitches];
     this.activePitches = [];
@@ -216,7 +216,7 @@ export class KeyboardView {
     this.rebuild();
   }
 
-  /** 清空（空状态 / 无曲目 / 首次渲染失败）：整个键盘区隐藏，不残留旧版本键表与动态 / 反射状态。 */
+  /** Clear (empty state / no tune / first render failure): hide the whole keyboard area without leaving the old key list or dynamic / reflection state. */
   clear(): void {
     this.hasTune = false;
     this.activePitches = [];
@@ -228,8 +228,8 @@ export class KeyboardView {
   }
 
   /**
-   * 播放高亮（SPEC-PLAY-09）：跟随记谱材料的演奏时间、包含静音声部；
-   * 空数组清除（停止 / 暂停 / 自然结束 / 渲染失败清除动态提示，SPEC-STATE-03）。
+   * Playback highlighting (SPEC-PLAY-09): follows the performance time of the notated material, including muted voices;
+   * an empty array clears it (stop / pause / natural end / render failure clear dynamic hints, SPEC-STATE-03).
    */
   setActivePitches(pitches: ReadonlyArray<number>): void {
     this.activePitches = [...new Set(pitches)];
@@ -237,31 +237,31 @@ export class KeyboardView {
     this.updateArrows();
   }
 
-  /** 清空动态提示但保留键表（SPEC-STATE-03：旧谱参考时清除键盘动态提示）。 */
+  /** Clear dynamic hints but keep the key list (SPEC-STATE-03: clear keyboard dynamic hints while the stale score is shown for reference). */
   clearActivePitches(): void {
     this.setActivePitches([]);
   }
 
   /**
-   * 查阅 / 点选反射（SPEC-PLAY-15）：源码光标或预览点选的音符在键盘上以查阅色突出；
-   * 与播放高亮独立共存，同一键同时命中时播放色优先（CSS 规则保证）。
+   * Inspection / click reflection (SPEC-PLAY-15): the note under the source cursor or clicked in the preview is highlighted on the keyboard in the inspection color;
+   * coexists independently with playback highlighting; when both hit the same key the playback color wins (guaranteed by CSS).
    */
   setPointedPitches(pitches: ReadonlyArray<number>): void {
     this.pointedPitches = [...new Set(pitches)];
     this.applyActiveClasses();
   }
 
-  /** 清除查阅 / 点选反射（SPEC-PLAY-15）：标记清除、换版或点到非音符元素时调用。 */
+  /** Clear inspection / click reflection (SPEC-PLAY-15): called when the marker is cleared, the version changes or a non-note element is clicked. */
   clearPointedPitches(): void {
     this.setPointedPitches([]);
   }
 
-  /** 当前文件级界面偏好（SPEC-SET-05）：收起与音域模式，选曲与播放位置不持久。 */
+  /** Current file-level UI preferences (SPEC-SET-05): collapsed and range mode; selection and playback position are not persisted. */
   getPreferences(): PracticeUiPreferences {
     return { keyboardCollapsed: this.collapsed, keyboardMode: this.mode };
   }
 
-  /** 恢复界面偏好（SPEC-SET-05）：只改变视图，不触发保存回调；音域按当前曲目重新计算。 */
+  /** Restore UI preferences (SPEC-SET-05): only changes the view without firing the save callback; the range is recomputed for the current tune. */
   applyPreferences(preferences: PracticeUiPreferences): void {
     this.mode = preferences.keyboardMode;
     this.elements.rangeSelect.value = this.mode;
@@ -290,7 +290,7 @@ export class KeyboardView {
     this.updateCollapseButton();
   }
 
-  /** 音域模式切换（SPEC-PLAY-08）：立即重建键表并把视图定位到材料音域；不改变收起与提示显隐。 */
+  /** Range mode switch (SPEC-PLAY-08): rebuild the key list immediately and position the view on the material range; collapsed state and hint visibility are unchanged. */
   private setMode(mode: KeyboardRangeMode): void {
     if (mode === this.mode) {
       return;
@@ -310,7 +310,7 @@ export class KeyboardView {
     this.updateCollapseButton();
     this.updateVisibility();
     if (!collapsed) {
-      // 展开时给键表一个稳定锚点（材料音域）；播放不驱动横移，此初始定位不算拉回
+      // Give the key list a stable anchor (material range) when expanding; playback never drives horizontal scrolling, so this initial positioning is not a pull-back
       this.refreshSize();
       this.scrollToTuneRange();
       this.updateArrows();
@@ -325,7 +325,7 @@ export class KeyboardView {
     this.elements.collapseButton.setAttribute('aria-expanded', String(!this.collapsed));
   }
 
-  /** 可见性（SPEC-PLAY-08）：有材料时显示；收起只隐藏键表 / 说明 / 音域选择，dock 条保留。 */
+  /** Visibility (SPEC-PLAY-08): shown when there is material; collapsing hides only the key list / note / range selector, the dock bar stays. */
   private updateVisibility(): void {
     const visible = this.hasTune;
     this.elements.section.hidden = !visible;
@@ -339,7 +339,7 @@ export class KeyboardView {
     }
   }
 
-  /** 重建键表（SPEC-PLAY-08）：当前模式与音域下按键序生成琴键；琴键纯可视、不进 Tab 顺序。 */
+  /** Rebuild the key list (SPEC-PLAY-08): generate keys in key order for the current mode and range; keys are purely visual and not in the Tab order. */
   private rebuild(): void {
     this.tuneRange = computeTuneRange(this.tunePitches);
     const pitches = keyPitches(this.mode, this.tuneRange);
@@ -352,7 +352,7 @@ export class KeyboardView {
         : 'abcdesk-key abcdesk-key-white';
       key.dataset.pitch = String(pitch);
       key.dataset.note = pitchName(pitch);
-      // 琴键纯可视（SPEC-PLAY-09）：无按钮语义、不进入 Tab 顺序，描述由滚动容器承载（SPEC-A11Y-15）
+      // Keys are purely visual (SPEC-PLAY-09): no button semantics, not in the Tab order; the description lives on the scroll container (SPEC-A11Y-15)
       key.setAttribute('aria-hidden', 'true');
       fragment.appendChild(key);
       this.keyElements.set(pitch, key);
@@ -365,7 +365,7 @@ export class KeyboardView {
     this.updateArrows();
   }
 
-  /** 键尺寸（SPEC-PLAY-08）：只重算 CSS 变量，不清滚动位置。 */
+  /** Key metrics (SPEC-PLAY-08): recompute only CSS variables, keep the scroll position. */
   private refreshSize(): void {
     const whiteCount = [...this.keyElements.keys()].filter((pitch) => !isBlackKey(pitch)).length;
     const metrics = computeKeyMetrics(this.elements.scroll.clientWidth, whiteCount);
@@ -377,7 +377,7 @@ export class KeyboardView {
     style.setProperty('--abcdesk-black-key-offset', `${metrics.blackOffset}px`);
   }
 
-  /** 初始 / 重建后的滚动锚点：把材料音域居中；播放事件不触发（不自动横移，SPEC-PLAY-08）。 */
+  /** Scroll anchor after initial build / rebuild: centre the material range; playback events never trigger it (no automatic horizontal scrolling, SPEC-PLAY-08). */
   private scrollToTuneRange(): void {
     const startKey = this.keyElements.get(this.tuneRange.start);
     const endKey = this.keyElements.get(this.tuneRange.end);
@@ -392,7 +392,7 @@ export class KeyboardView {
     scroll.scrollLeft = Math.max(0, center - scroll.clientWidth / 2);
   }
 
-  /** 键着色（SPEC-PLAY-09 / 15）：播放高亮与查阅反射各自独立开关，同键命中时 CSS 让播放色优先。 */
+  /** Key coloring (SPEC-PLAY-09 / 15): playback highlighting and inspection reflection toggle independently; when both hit the same key CSS lets the playback color win. */
   private applyActiveClasses(): void {
     const active = new Set(this.activePitches);
     const pointed = new Set(this.pointedPitches);
@@ -403,8 +403,8 @@ export class KeyboardView {
   }
 
   /**
-   * 方向提示（SPEC-PLAY-08）：可视窗口外有提示音时在对应边缘显示箭头；
-   * 只提示方向，不滚动、不把用户的手动浏览拉回。
+   * Direction hints (SPEC-PLAY-08): when a hinted pitch is outside the visible window, show an arrow at the matching edge;
+   * only the direction is hinted - no scrolling and no pulling back of the user's manual browsing.
    */
   private updateArrows(): void {
     const { leftArrow, rightArrow, scroll } = this.elements;
@@ -432,7 +432,7 @@ export class KeyboardView {
     rightArrow.hidden = !rightOut;
   }
 
-  /** 说明行（SPEC-STATE-05 / PLAY-08）：无音高材料说明没有提示；超出 A0–C8 的音高不折返、明确提示。 */
+  /** Note line (SPEC-STATE-05 / PLAY-08): material without pitches states there are no hints; pitches outside A0-C8 are not folded and are stated explicitly. */
   private updateNote(): void {
     const text = this.noteText();
     this.elements.note.textContent = text ?? '';

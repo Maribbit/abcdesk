@@ -2,7 +2,7 @@ import { renderAbc, TimingCallbacks, type NoteTimingEvent } from 'abcjs';
 import { toSourceRange, type MappedText } from '../core/sourceMap';
 import type { PreviewTune } from '../core/tunes';
 
-/** SPEC-DOC-06 / PLAY-11：abcjs 坐标保持原样，只在消息桥边界转换。 */
+/** SPEC-DOC-06 / PLAY-11: abcjs coordinates are kept as-is and converted only at the message bridge boundary. */
 export function sourceRanges(event: NoteTimingEvent, input: MappedText): Array<{ start: number; end: number }> {
   const starts = event.startCharArray ?? [];
   const ends = event.endCharArray ?? [];
@@ -19,7 +19,7 @@ export function sourceEvent(timings: NoteTimingEvent[], input: MappedText, offse
     .reduce<NoteTimingEvent | undefined>((first, event) => first === undefined || event.milliseconds < first.milliseconds ? event : first, undefined);
 }
 
-/** SPEC-PLAY-12：只验证候选曲及真实时序，不创建合成器或准备音色，也不碰当前有效谱面。 */
+/** SPEC-PLAY-12: validates only the candidate tune and real timing; creates no synth, prepares no soundfont and leaves the active score alone. */
 export function validateSourceTarget(candidate: PreviewTune, offset: number): boolean {
   if (!candidate.reliable) return false;
   const container = document.createElement('div');

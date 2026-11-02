@@ -1,4 +1,4 @@
-/** SPEC-DOC-06：解析输入到原文的 UTF-16 映射，不修改 abcjs 的对象或源文档。 */
+/** SPEC-DOC-06: UTF-16 mapping from parse input back to the original text; never mutates abcjs objects or the source document. */
 export interface CharRange {
   start: number;
   end: number;
@@ -6,10 +6,10 @@ export interface CharRange {
 
 export interface MappedText {
   text: string;
-  /** 每个 UTF-16 码元在原文的范围；合成字符使用 -1。 */
+  /** Range in the original text for each UTF-16 code unit; synthesized characters use -1. */
   starts: number[];
   ends: number[];
-  /** 继承头部虽有来源，但不能作为当前曲目的音符定位依据。 */
+  /** Inherited headers have an origin but cannot serve as note positions for the current tune. */
   linkable: boolean[];
 }
 
@@ -43,7 +43,7 @@ export function appendSource(
   linkable = true,
 ): void {
   target.text += source.text.slice(start, end);
-  // 不用展开运算符传大数组，避免长谱超过引擎参数数目限制。
+  // Avoid spreading large arrays into calls so long scores do not exceed the engine's argument limit.
   for (let index = start; index < end; index += 1) {
     target.starts.push(source.starts[index]);
     target.ends.push(source.ends[index]);
@@ -60,7 +60,7 @@ export function appendSynthetic(target: MappedText, text: string): void {
   }
 }
 
-/** 只接受连续、非空、完整属于曲目原文的范围；不夹取无效偏移。 */
+/** Only contiguous, non-empty ranges fully inside the tune source are accepted; invalid offsets are not clamped. */
 export function toSourceRange(input: MappedText, start: number, end: number): CharRange | undefined {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > input.text.length) {
     return undefined;

@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * spec-check：docs/spec 规格条目与绑定引用（测试代码 / 人工验证清单）的双向校验。
+ * spec-check: bidirectional check between docs/spec items and their bound references (test code / manual check list).
  *
- * 正向：每个规格条目必须至少被一处引用覆盖——
- *   auto   条目：出现在 src/ 或 test/ 的 *.test.ts 的测试声明标题中
- *          （it / it.todo / it.skip / it.only / describe / test 的首个字符串参数）；
- *   manual 条目：出现在 docs/manual-checks.md 中。
- * 反向：所有 [SPEC-...] 引用必须能在规格文档中找到定义（无悬空引用）。
- * 附带：输出 it.todo 占位待转正清单（进度可见性，不影响退出码）。
+ * Forward: every spec item must be covered by at least one reference -
+ *   auto   items: appear in a test declaration title in src/ or test/ *.test.ts
+ *          (first string argument of it / it.todo / it.skip / it.only / describe / test);
+ *   manual items: appear in docs/manual-checks.md.
+ * Reverse: every [SPEC-...] reference must resolve to a definition in the spec docs (no dangling references).
+ * Extra: prints the list of it.todo placeholders still to be promoted (progress visibility, does not affect the exit code).
  *
- * 用法：npm run spec:check；违规时退出码为 1。
+ * Usage: npm run spec:check; exits with code 1 on violations.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,10 +21,10 @@ const manualChecksPath = join(root, 'docs', 'manual-checks.md');
 
 const ENTRY_PATTERN = /^### (SPEC-[A-Z0-9]+-\d{2})\s+(.+)$/gm;
 const REFERENCE_PATTERN = /\[(SPEC-[A-Z0-9]+-\d{2})\]/g;
-// 测试声明：只承认声明调用首个字符串参数（标题）内的引用；`.todo` 视为占位。
+// Test declarations: only references inside the first string argument (the title) of a declaration call count; `.todo` is a placeholder.
 const DECLARATION_PATTERN =
   /(?<![\w.])(?:it|describe|test)(?:\.(todo|skip|only))?\s*\(\s*(?:'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`)/g;
-const VERIFY_PATTERN = /^\s*[-*]\s*验证：\s*(auto|manual)\s*$/m;
+const VERIFY_PATTERN = /^\s*[-*]\s*验证：\s*(auto|manual)\s*$/m; // spec marker follows the Chinese spec docs (docs/conventions.md)
 
 function readText(path) {
   return readFileSync(path, 'utf8');
@@ -49,7 +49,7 @@ function collectSpecItems() {
       const block = text.slice(match.index, blockEnd);
       const verify = block.match(VERIFY_PATTERN);
       if (items.has(id)) {
-        errors.push(`重复定义：${id}（${file}，首次定义见 ${items.get(id).file}）`);
+        errors.push(`duplicate definition: ${id} (${file}, first defined in ${items.get(id).file})`);
         continue;
       }
       items.set(id, { id, title, file, verify: verify ? verify[1] : null });
@@ -95,11 +95,11 @@ const manualRefs = collectManualReferences();
 const unbound = [];
 for (const item of items.values()) {
   if (!item.verify) {
-    errors.push(`缺少验证方式（需要 "- 验证：auto / manual"）：${item.id}（${item.file}）`);
+    errors.push(`missing verification mode (needs "- 验证：auto / manual"): ${item.id} (${item.file})`);
   } else if (item.verify === 'auto' && !testRefs.has(item.id)) {
-    unbound.push(`${item.id}（${item.file}）需要测试引用`);
+    unbound.push(`${item.id} (${item.file}) needs a test reference`);
   } else if (item.verify === 'manual' && !manualRefs.has(item.id)) {
-    unbound.push(`${item.id}（${item.file}）需要在 docs/manual-checks.md 登记`);
+    unbound.push(`${item.id} (${item.file}) needs an entry in docs/manual-checks.md`);
   }
 }
 
@@ -108,25 +108,25 @@ for (const ref of new Set([...testRefs, ...manualRefs])) {
   if (!items.has(ref)) dangling.push(ref);
 }
 
-console.log('spec-check：规格条目与绑定引用双向校验');
+console.log('spec-check: bidirectional check of spec items and bound references');
 console.log(
-  `  规格条目 ${items.size}；测试引用 ${testRefs.size}（真实 ${realRefs.size}、占位 ${todoRefs.size}）；人工验证引用 ${manualRefs.size}`,
+  `  spec items ${items.size}; test references ${testRefs.size} (real ${realRefs.size}, placeholder ${todoRefs.size}); manual check references ${manualRefs.size}`,
 );
 const placeholderOnly = [...todoRefs].filter((id) => !realRefs.has(id)).sort();
 if (placeholderOnly.length > 0) {
-  console.log(`  占位待转正 ${placeholderOnly.length} 条（it.todo）：`);
+  console.log(`  ${placeholderOnly.length} placeholder-only item(s) to promote (it.todo):`);
   for (let i = 0; i < placeholderOnly.length; i += 6) {
     console.log(`    ${placeholderOnly.slice(i, i + 6).join(', ')}`);
   }
 }
-for (const message of errors) console.log(`  [错误] ${message}`);
-for (const message of unbound) console.log(`  [未绑定] ${message}`);
-for (const message of dangling) console.log(`  [悬空引用] ${message}`);
+for (const message of errors) console.log(`  [error] ${message}`);
+for (const message of unbound) console.log(`  [unbound] ${message}`);
+for (const message of dangling) console.log(`  [dangling] ${message}`);
 
 const failures = errors.length + unbound.length + dangling.length;
 if (failures === 0) {
-  console.log('  通过：全部条目均有绑定引用，无悬空引用。');
+  console.log('  passed: every item has a bound reference and there are no dangling references.');
 } else {
-  console.log(`  失败：${failures} 个问题。`);
+  console.log(`  failed: ${failures} problem(s).`);
   process.exitCode = 1;
 }

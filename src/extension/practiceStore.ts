@@ -7,22 +7,22 @@ import {
 } from '../core/practice';
 
 /**
- * 练习记录的工作区状态存取（SPEC-SET-02 / 06 / 08、P04 / P05 决议）：
- * - 以文件 URI 为键保存在扩展的 workspaceState，不写项目文件；
- * - 记忆开关每次读取，关闭时不读不写，但不改动当前预览；
- * - 无工作区（空窗口 / 单文件）与未保存文档不落盘；
- * - 记录只经预览内的重置入口删除，读取失败回退默认值而不清理。
+ * Workspace-state access for practice records (SPEC-SET-02 / 06 / 08, decisions P04 / P05):
+ * - stored in the extension's workspaceState keyed by file URI; no project files are written;
+ * - the memory toggle is read on every access; when off nothing is read or written, but the current preview is left untouched;
+ * - no workspace (empty window / single file) and unsaved documents are never persisted;
+ * - records are deleted only through the reset entry inside the preview; a failed read falls back to defaults without cleanup.
  */
 export class PracticeStore {
   constructor(private readonly state: vscode.Memento | undefined) {}
 
-  /** 记忆开关（SPEC-SET-06）：配置缺失时按默认开启。 */
+  /** Memory toggle (SPEC-SET-06): defaults to on when the setting is missing. */
   private enabled(): boolean {
     const configuration = vscode.workspace.getConfiguration?.('abcdesk');
     return configuration?.get<boolean>('rememberPracticeSettings', true) ?? true;
   }
 
-  /** 可落盘范围（P04）：开关开启、有工作区且文档已保存。 */
+  /** Persistable scope (P04): toggle on, a workspace exists and the document is saved. */
   persistable(uri: string): boolean {
     return this.state !== undefined && this.enabled() &&
       (vscode.workspace.workspaceFolders?.length ?? 0) > 0 &&
@@ -34,19 +34,19 @@ export class PracticeStore {
     return parsePracticeRecord(this.state.get<unknown>(practiceStorageKey(uri)));
   }
 
-  /** 保存合并后的记录（P05：后写覆盖）；无工作区 / 未保存 / 关闭开关时不落盘。 */
+  /** Save the merged record (P05: last write wins); not persisted without a workspace / unsaved / toggle off. */
   save(uri: string, record: PracticeRecord): void {
     if (!this.persistable(uri)) return;
     void this.state?.update(practiceStorageKey(uri), record);
   }
 
-  /** 重置本文件（SPEC-SET-07）：删除该文件的全部曲目与界面记录。 */
+  /** Reset this file (SPEC-SET-07): delete all tune and UI records of the file. */
   clear(uri: string): void {
     if (this.state === undefined || !this.enabled() || uri.startsWith('untitled:')) return;
     void this.state.update(practiceStorageKey(uri), undefined);
   }
 
-  /** 迁移（SPEC-LIFE-03 / 04、SET-08）：目标已有记录时不覆盖、不混合、不删除来源。 */
+  /** Migrate (SPEC-LIFE-03 / 04, SET-08): when the target already has a record, do not overwrite, mix or delete the source. */
   migrate(from: PracticeRecord | undefined, to: string): void {
     if (from === undefined || !this.persistable(to)) return;
     if (this.read(to) !== undefined) return;
@@ -54,7 +54,7 @@ export class PracticeStore {
   }
 }
 
-/** 记录内容等价判断：用于避免恢复后原样回写、覆盖其他窗口的更新。 */
+/** Record equivalence: avoids writing back unchanged data after restore and clobbering another window's update. */
 export function samePracticeRecord(first: PracticeRecord, second: PracticeRecord): boolean {
   return canonical(first) === canonical(second);
 }
@@ -66,7 +66,7 @@ function canonical(record: PracticeRecord): string {
   return JSON.stringify({ version: record.version, ui: record.ui, tunes });
 }
 
-/** 合并前后等价时保留原记录，避免不变的上报触发写入。 */
+/** Keep the original record when the merge is equivalent so an unchanged report does not trigger a write. */
 export function mergePracticeIfChanged(base: PracticeRecord | undefined, incoming: PracticeRecord): PracticeRecord {
   const merged = mergePracticeRecords(base, incoming);
   return base !== undefined && samePracticeRecord(base, merged) ? base : merged;

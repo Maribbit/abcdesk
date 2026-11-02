@@ -1,27 +1,27 @@
 /**
- * SVG 导出（SPEC-EXP-04 / 06）：Node 侧用最小 DOM stub 驱动 abcjs 渲染，
- * 与预览 / 播放完全独立，不要求先打开预览或加载音色。
- * 输出单文件、白底黑谱，可脱离 VS Code 显示。
+ * SVG export (SPEC-EXP-04 / 06): drives abcjs rendering on the Node side with a minimal DOM stub,
+ * fully independent of preview / playback - no open preview or loaded soundfont required.
+ * Output is a single file, black notation on white, viewable outside VS Code.
  */
 import { loadAbcjs } from './abcjs';
 import { StubElement, installStubDom, serializeStubTree } from './svg-dom';
 import { tuneHasNotes } from './tunes';
 
-/** 排版基准宽度（固定值，SPEC-EXP-06）：不受预览主题、窗口宽度、滚动或缩放状态影响。 */
+/** Layout reference width (fixed, SPEC-EXP-06): unaffected by preview theme, window width, scroll or zoom state. */
 const EXPORT_STAFF_WIDTH = 740;
 
-/** 谱面绘制色：替换 abcjs 的 currentColor 占位，不依赖查看器的颜色上下文。 */
+/** Notation drawing color: replaces the abcjs currentColor placeholder so the viewer's color context does not matter. */
 const EXPORT_PAINT_COLOR = '#000000';
 
-/** 背景色（SPEC-EXP-06 白底）：无背景的 SVG 在暗色界面上会不可读。 */
+/** Background color (SPEC-EXP-06 white): an SVG without background is unreadable on dark UIs. */
 const EXPORT_BACKGROUND_COLOR = '#ffffff';
 
-/** 导出单曲 SVG 文本（SPEC-EXP-06）；无音符内容时返回 undefined，不生成空壳（SPEC-EXP-08）。 */
+/** Export a single tune as SVG text (SPEC-EXP-06); returns undefined when there is no note content, never produces an empty shell (SPEC-EXP-08). */
 export async function generateSvgText(abcText: string): Promise<string | undefined> {
   const abcjs = await loadAbcjs();
   const restoreDom = installStubDom();
   try {
-    // 渲染与序列化全程同步：stub 安装期间不跨 await，不与其他任务交错
+    // Rendering and serialization are fully synchronous: no await while the stub is installed, no interleaving with other tasks
     const host = new StubElement(null, 'div');
     const tunes = abcjs.renderAbc(host as unknown as HTMLElement, abcText, {
       staffwidth: EXPORT_STAFF_WIDTH,
@@ -42,7 +42,7 @@ export async function generateSvgText(abcText: string): Promise<string | undefin
   }
 }
 
-/** 白底：插入首个（最底层）占满根尺寸的背景矩形。 */
+/** White background: insert a full-size background rect as the first (bottom-most) child. */
 function addBackground(svg: StubElement): void {
   const background = new StubElement('http://www.w3.org/2000/svg', 'rect');
   background.setAttribute('width', '100%');
@@ -51,7 +51,7 @@ function addBackground(svg: StubElement): void {
   svg.insertBefore(background, svg.firstChild);
 }
 
-/** 高度取整：abcjs 按内容推算的高度为小数，部分查看器 / 图像转换对小数高度处理不一致。 */
+/** Integer height: abcjs derives a fractional height from content and some viewers / converters handle fractions inconsistently. */
 function roundHeight(svg: StubElement): void {
   const height = Number.parseFloat(svg.getAttribute('height') ?? '');
   if (Number.isFinite(height)) {

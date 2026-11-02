@@ -1,14 +1,14 @@
 /**
- * abcjs 惰性加载（SPEC-EXP-04）：导出与预览 / 播放各自独立准备，不复用预览渲染实例；
- * 动态 import 使 abcjs 只在首次导出时初始化，不拖慢扩展激活。
+ * Lazy abcjs loading (SPEC-EXP-04): export is prepared independently of preview / playback and does not reuse the preview render instance;
+ * the dynamic import initializes abcjs only on the first export so extension activation is not slowed down.
  */
 
-/** abcjs 模块命名空间类型（`import('abcjs')` 的结果）。 */
+/** abcjs module namespace type (the result of `import('abcjs')`). */
 export type AbcjsModule = typeof import('abcjs');
 
 let loading: Promise<AbcjsModule> | undefined;
 
-/** 加载 abcjs（进程内只初始化一次）；兼容 CJS interop 下包在 default 上的导出形态。 */
+/** Load abcjs (initialized once per process); tolerates the CJS interop shape where exports hang off default. */
 export function loadAbcjs(): Promise<AbcjsModule> {
   loading ??= import('abcjs').then(
     (module) => (module as { default?: AbcjsModule }).default ?? (module as AbcjsModule),

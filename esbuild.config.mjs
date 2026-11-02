@@ -1,12 +1,12 @@
-// ABC Desk 构建脚本：extension（Node / CJS）与 webview（浏览器）双 bundle。
+// ABC Desk build script: dual bundles for extension (Node / CJS) and webview (browser).
 import { cp, mkdir } from 'node:fs/promises';
 import esbuild from 'esbuild';
 
 const watch = process.argv.includes('--watch');
 
 /**
- * codicon 图标字体（图标内容 CC-BY-4.0，见 out/codicons/THIRD_PARTY_NOTICES.txt）：
- * 随构建拷贝到 out/codicons/，webview 经 asWebviewUri 加载；资源仍限扩展自有目录（SPEC-ENV-05）。
+ * codicon icon font (icon content CC-BY-4.0, see out/codicons/THIRD_PARTY_NOTICES.txt):
+ * copied to out/codicons/ at build time and loaded by the webview via asWebviewUri; resources stay inside the extension's own directory (SPEC-ENV-05).
  */
 async function copyCodicons() {
   await mkdir('out/codicons', { recursive: true });
@@ -29,7 +29,7 @@ const extensionConfig = {
   bundle: true,
   format: 'cjs',
   platform: 'node',
-  // 对齐 engines.vscode 开发基线；最低支持版本终值随 E03 实测调整（见 docs/plan.md）。
+  // Aligned with the engines.vscode development baseline; the final minimum version follows the E03 measurement (see docs/plan.md).
   target: 'node16',
   external: ['vscode'],
   sourcemap: true,

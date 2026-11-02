@@ -1,21 +1,21 @@
 /**
- * 渲染用最小 DOM stub（SPEC-EXP-04 / 06）：在 Node 侧驱动 abcjs `renderAbc` 产出 SVG，
- * 不依赖真实浏览器环境。安装到还原之间全程同步（无 await），不与扩展宿主其他代码交错。
+ * Minimal DOM stub for rendering (SPEC-EXP-04 / 06): drives abcjs `renderAbc` on the Node side to produce SVG
+ * without a real browser. Everything between install and restore is synchronous (no await) so it never interleaves with other extension host code.
  *
- * stub 只实现 abcjs 渲染路径实际访问的接口面；文本测量经 getBBox 估算
- * （宽度 ≈ 字符数 × 字号 × 0.6），与真实浏览器渲染结果对照一致。
+ * The stub implements only the surface the abcjs render path actually touches; text measurement is estimated via getBBox
+ * (width ~ character count x font size x 0.6), calibrated against real browser output.
  */
 
-/** 估算文本宽度相对字号的系数（经验值，与浏览器渲染实测对照校准）。 */
+/** Estimated text width relative to font size (empirical, calibrated against browser rendering). */
 const WIDTH_PER_CHAR_RATIO = 0.6;
 
-/** 估算行高相对字号的系数。 */
+/** Estimated line height relative to font size. */
 const LINE_HEIGHT_RATIO = 1.2;
 
-/** 未显式给出字号时的兜底值。 */
+/** Fallback when no explicit font size is given. */
 const FALLBACK_FONT_SIZE = 10;
 
-/** stub 节点公共部分：子节点与挂接关系。 */
+/** Shared part of stub nodes: children and parent links. */
 class StubNode {
   readonly childNodes: Array<StubText | StubElement> = [];
   parentNode: StubNode | undefined;
@@ -64,7 +64,7 @@ class StubNode {
   }
 }
 
-/** 文本节点 stub。 */
+/** Text node stub. */
 export class StubText extends StubNode {
   data: string;
 
@@ -82,7 +82,7 @@ export class StubText extends StubNode {
   }
 }
 
-/** 元素节点 stub：属性表 + 内联样式表 + 估算测量。 */
+/** Element node stub: attribute map + inline style map + estimated measurement. */
 export class StubElement extends StubNode {
   readonly tagName: string;
   readonly namespaceURI: string | null;
@@ -112,12 +112,12 @@ export class StubElement extends StubNode {
     this.attributes.delete(name);
   }
 
-  /** 交互事件注册在导出中没有意义，忽略（abcjs 点选初始化会调用）。 */
+  /** Event registration is meaningless for export and is ignored (abcjs click-selection setup calls it). */
   addEventListener(): void {}
 
   removeEventListener(): void {}
 
-  /** abcjs 只用 innerHTML 清空容器；其余写入不影响导出结果。 */
+  /** abcjs only uses innerHTML to clear the container; other writes do not affect the export. */
   set innerHTML(value: string) {
     if (value === '') {
       this.childNodes.length = 0;
@@ -143,7 +143,7 @@ export class StubElement extends StubNode {
     return this.childNodes.filter((child): child is StubElement => child instanceof StubElement);
   }
 
-  /** 长谱收尾时 abcjs 经 parentElement 回收分组容器（svg.js closeGroup）。 */
+  /** When finishing a long score abcjs recycles group containers via parentElement (svg.js closeGroup). */
   get parentElement(): StubNode | undefined {
     return this.parentNode;
   }
@@ -161,7 +161,7 @@ export class StubElement extends StubNode {
   }
 }
 
-/** stub document 的接口面（abcjs 渲染路径访问的最小集合）。 */
+/** Surface of the stub document (the minimal set the abcjs render path accesses). */
 interface StubDocument {
   body: StubElement;
   createElement(tagName: string): StubElement;
@@ -170,7 +170,7 @@ interface StubDocument {
   querySelector(selector: string): StubElement | null;
 }
 
-/** 安装 stub 到全局环境，返回还原函数；还原函数必须放在 finally 中调用。 */
+/** Install the stub into the global environment and return a restore function; restore must be called in finally. */
 export function installStubDom(): () => void {
   const descriptors = {
     document: Object.getOwnPropertyDescriptor(globalThis, 'document'),
@@ -187,7 +187,7 @@ export function installStubDom(): () => void {
     querySelector: (selector) => (selector === 'body' ? body : null),
   };
   defineGlobal('document', stubDocument);
-  // abcjs 的渲染入口读取 navigator.userAgent，错误路径访问 window.console（renderer.js）
+  // The abcjs render entry reads navigator.userAgent and the error path touches window.console (renderer.js)
   defineGlobal('navigator', { userAgent: '' });
   defineGlobal('window', { console, addEventListener() {} });
 
@@ -198,13 +198,13 @@ export function installStubDom(): () => void {
   };
 }
 
-/** 序列化选项。 */
+/** Serialization options. */
 export interface SerializeOptions {
-  /** 把 abcjs 的 `currentColor` 占位替换为固定绘制色（SPEC-EXP-06 白底黑谱）；缺省保留原值。 */
+  /** Replace the abcjs `currentColor` placeholder with a fixed drawing color (SPEC-EXP-06 black on white); keeps the original when omitted. */
   paintColor?: string;
 }
 
-/** 把 stub 节点树序列化为 SVG 文本（含 XML 转义与根元素 xmlns 补全）。 */
+/** Serialize the stub node tree to SVG text (with XML escaping and a root xmlns). */
 export function serializeStubTree(root: StubElement, options: SerializeOptions = {}): string {
   return serializeNode(root, true, options.paintColor);
 }
@@ -215,7 +215,7 @@ function serializeNode(node: StubText | StubElement, isRoot: boolean, paintColor
   }
   const attributes: string[] = [];
   for (const [name, value] of node.attributes) {
-    // 不携带脚本与事件处理器（SPEC-EXP-06）：abcjs 缓存的监听器也不写入导出文件
+    // No scripts or event handlers are carried over (SPEC-EXP-06): listeners cached by abcjs are not written to the export
     if (/^on/i.test(name)) {
       continue;
     }

@@ -13,8 +13,8 @@ beforeAll(() => {
 const first = 'X:1\nT:第一首\nK:C\nCDEF|';
 const second = 'X:2\nT:第二首\nK:G\n|:GABc:|';
 
-describe('真实渲染与时序的整文件映射', () => {
-  it.each(['\n', '\r\n', '\r'])('[SPEC-DOC-06] %j 的后续曲目反复与变速均只映射原曲目音符', (eol) => {
+describe('whole-file mapping with real rendering and timing', () => {
+  it.each(['\n', '\r\n', '\r'])('[SPEC-DOC-06] with %j line endings, repeats and tempo changes of a later tune map only to that tune\'s notes', (eol) => {
     const source = `\uFEFF \n% 中文\uD840\uDC00\nM:4/4\nL:1/8\n${first}\n\n${second}`.replaceAll('\n', eol);
     const selected = createTuneCatalog(source).tunes[1];
     const element = document.createElement('div');
@@ -33,7 +33,7 @@ describe('真实渲染与时序的整文件映射', () => {
     element.remove();
   });
 
-  it('[SPEC-PLAY-12] 首曲错误不阻断第二曲候选验证，非音符与曲间空白不能补播', () => {
+  it('[SPEC-PLAY-12] an error in the first tune does not block validating the second tune candidate; non-notes and inter-tune blanks cannot start playback', () => {
     const source = `X:1\nK:wrong\n???\n\n${second}`;
     const catalog = createTuneCatalog(source);
     expect(validateSourceTarget(catalog.tunes[1], source.indexOf('GABc'))).toBe(true);
@@ -43,7 +43,7 @@ describe('真实渲染与时序的整文件映射', () => {
   });
 });
 
-describe('记谱声部的可靠签名', () => {
+describe('reliable signature of notated voices', () => {
   function signature(abc: string): string | null {
     const root = document.createElement('div');
     document.body.append(root);
@@ -53,7 +53,7 @@ describe('记谱声部的可靠签名', () => {
     return result;
   }
   const voices = 'X:1\nV:top name="旋律"\nV:low name="伴奏"\nK:C\n[V:top] CDEF|\n[V:low] C,4|';
-  it('[SPEC-SET-04] 以真实 V:、名称及实际轨顺序签名，重命名/改标识/重排均变化', () => {
+  it('[SPEC-SET-04] signs with real V:, names and actual track order; renaming / re-identifying / reordering all change it', () => {
     const original = signature(voices);
     expect(original).toBe(JSON.stringify([['top', '旋律'], ['low', '伴奏']]));
     expect(signature(voices.replaceAll('top', 'high'))).not.toBe(original);
@@ -61,14 +61,14 @@ describe('记谱声部的可靠签名', () => {
     expect(signature(voices.replace('X:1\n', 'X:1\n%%score low top\n'))).toBe(JSON.stringify([['low', '伴奏'], ['top', '旋律']]));
     expect(signature(voices.replace('[V:top]', 'V:top\n').replace('[V:low]', 'V:low\n'))).toBe(original);
   });
-  it('[SPEC-SET-04] 默认单声部使用内部标识，注释和弦文本不制造伪声部', () => {
+  it('[SPEC-SET-04] the default single voice uses the internal identifier; annotation chord text creates no fake voice', () => {
     expect(signature('X:1\nK:C\n% [V:fake]\n"[V:other]"CDEF|')).toBe(JSON.stringify([[null, null]]));
     expect(signature('X:1\nV:@implicit\nK:C\nCDEF|')).toBe(JSON.stringify([['@implicit', null]]));
     expect(signature('X:1\nT:[V:title]\n%%begintext\n[V:text]\n%%endtext\nK:C\nCDEF|\nw:[V:lyrics]')).toBe(JSON.stringify([[null, null]]));
     expect(signature(voices.replace('K:C', 'V:unused\nK:C'))).toBeNull();
     expect(signature('X:1\nV:solo\nK:C\nCDEF|')).toBe(JSON.stringify([['solo', null]]));
   });
-  it('[SPEC-SET-04] 无法一一核验的多轨返回未知', () => {
+  it('[SPEC-SET-04] multiple tracks that cannot be verified one to one return unknown', () => {
     expect(voiceSignature({ lines: [{ staff: [{ voices: [[], []] }] }] } as unknown as Parameters<typeof voiceSignature>[0], voices)).toBeNull();
   });
 });

@@ -1,11 +1,11 @@
 /**
- * MIDI 导出（SPEC-EXP-05）：按 ABC 原材料生成标准 MIDI 文件，
- * 不应用播放器练习设置（速度百分比、声部静音、循环等），也不做音频采样合成。
+ * MIDI export (SPEC-EXP-05): generate a standard MIDI file from the ABC source material,
+ * without applying player practice settings (speed percentage, voice mutes, loop, etc.) and without audio synthesis.
  */
 import { loadAbcjs } from './abcjs';
 import { tuneHasNotes } from './tunes';
 
-/** 导出单曲 MIDI（SPEC-EXP-05）；无音符内容时返回 undefined，不生成空文件（SPEC-EXP-08）。 */
+/** Export a single tune as MIDI (SPEC-EXP-05); returns undefined when there is no note content, never writes an empty file (SPEC-EXP-08). */
 export async function generateMidiBytes(abcText: string): Promise<Uint8Array | undefined> {
   const abcjs = await loadAbcjs();
   const tunes = abcjs.parseOnly(abcText);
@@ -17,7 +17,7 @@ export async function generateMidiBytes(abcText: string): Promise<Uint8Array | u
   if (result instanceof Uint8Array) {
     return result;
   }
-  // 防御 abcjs 版本差异：按字符串来源返回时是各曲目字节数组
+  // Guard against abcjs version differences: when returned as a string source it is a per-tune array of byte arrays
   if (Array.isArray(result) && result[0] instanceof Uint8Array) {
     return result[0];
   }

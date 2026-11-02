@@ -49,7 +49,7 @@ class Panel {
     html: '', cspSource: 'vscode-resource:', asWebviewUri: (value: unknown) => value,
     postMessage: (message: unknown) => {
       const parsed = parseHostMessage(message);
-      expect(parsed, '宿主必须发送完整的新协议消息').toBeDefined();
+      expect(parsed, 'the host must send complete new-protocol messages').toBeDefined();
       this.sent.push(parsed!);
       return Promise.resolve(true);
     },
@@ -169,8 +169,8 @@ beforeEach(() => {
 });
 afterEach(() => { manager.dispose(); vi.useRealTimers(); });
 
-describe('宿主快照、上下文与起播往返', () => {
-  it('[SPEC-CMD-07] 首次源码起播意图随初始化发送，保留焦点且不先等待第一首', () => {
+describe('host snapshots, context and start round trips', () => {
+  it('[SPEC-CMD-07] the initial source start intent is sent with initialization, keeps focus and does not wait for the first tune first', () => {
     manager.requestPlayFromCursor(asDocument(doc), doc.abc.indexOf('GABc'));
     const panel = env.panels[0];
     expect(panel.reveal).toHaveBeenCalledWith(undefined, true);
@@ -179,7 +179,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(panel.sent.filter((message) => message.type === 'play-from-cursor')).toHaveLength(0);
   });
 
-  it('[SPEC-DOC-04] 选曲刷新覆盖尚在防抖窗口的编辑，响应保留请求编号', () => {
+  it('[SPEC-DOC-04] a tune selection refresh overrides edits still in the debounce window and the response keeps the request number', () => {
     const panel = open(doc);
     const context = applied(panel);
     doc.version += 1; doc.abc = doc.abc.replace('X:2', 'X:3');
@@ -194,7 +194,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(panel.sent).toHaveLength(count);
   });
 
-  it('[SPEC-ENV-04] 旧选择/实例的渲染和越界范围拒绝，错误状态可标记文档已应用', () => {
+  it('[SPEC-ENV-04] renders from old selections/instances and out-of-range ranges are rejected; an error state can still mark the document applied', () => {
     const panel = open(doc);
     const old = applied(panel);
     const current = { ...old, selection: 2 };
@@ -215,7 +215,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(editor.revealRange).toHaveBeenCalledOnce();
   });
 
-  it('[SPEC-PLAY-01] 旧快照播放状态仍参与互斥，旧实例不能控制新面板', () => {
+  it('[SPEC-PLAY-01] the playback state of an old snapshot still takes part in mutual exclusion; an old instance cannot control the new panel', () => {
     const panel = open(doc);
     const context = applied(panel);
     const otherDoc = new Doc('other'); env.documents.push(otherDoc);
@@ -230,7 +230,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(other.sent).toHaveLength(count);
   });
 
-  it('[SPEC-PLAY-12] 播放/准备中的未应用更新拒绝源码起播，停止仍能取消', () => {
+  it('[SPEC-PLAY-12] an unapplied update while playing/preparing rejects source starts; stop can still cancel', () => {
     const panel = open(doc);
     const context = applied(panel);
     panel.received({ type: 'playback-state', context, state: 'preparing' });
@@ -242,7 +242,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(last(panel, 'playback').action).toBe('stop');
   });
 
-  it('[SPEC-ENV-04] 预览本地停止会取消宿主仍在等新版渲染的源码起播', () => {
+  it('[SPEC-ENV-04] a local stop in the preview cancels a source start the host is still waiting on for the new render', () => {
     const panel = open(doc);
     const old = applied(panel);
     doc.version += 1; doc.abc += '\n% update';
@@ -253,7 +253,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(panel.sent.filter((message) => message.type === 'play-from-cursor')).toHaveLength(0);
   });
 
-  it('[SPEC-ENV-04] 同一上下文的迟到定位不覆盖后请求，目标起播回传原请求编号', async () => {
+  it('[SPEC-ENV-04] a late locate in the same context does not override a later request; the target start reports the original request number', async () => {
     const panel = open(doc);
     const context = applied(panel);
     const resolves: Array<(editor: Editor) => void> = [];
@@ -279,7 +279,7 @@ describe('宿主快照、上下文与起播往返', () => {
     expect(last(panel, 'playback')).toMatchObject({ action: 'toggle', context });
   });
 
-  it('[SPEC-ENV-04] 打开源码的异步定位完成前切曲，旧选区不能落到新状态', async () => {
+  it('[SPEC-ENV-04] switching tunes before the async locate of go-to-source completes keeps the old selection off the new state', async () => {
     const panel = open(doc);
     const context = applied(panel);
     let resolve!: (editor: Editor) => void;
@@ -294,8 +294,8 @@ describe('宿主快照、上下文与起播往返', () => {
   });
 });
 
-describe('文件生命周期与来源状态', () => {
-  it('[SPEC-LIFE-03] 未保存文档首次保存接续身份，版本与暂停位置沿用最近推送', async () => {
+describe('file lifecycle and source status', () => {
+  it('[SPEC-LIFE-03] the first save of an unsaved document continues its identity; version and paused position follow the latest push', async () => {
     const unsaved = new Doc();
     unsaved.isUntitled = true;
     unsaved.uri = uri('untitled:1');
@@ -303,7 +303,7 @@ describe('文件生命周期与来源状态', () => {
     const panel = open(unsaved);
     applied(panel);
     const pushed = last(panel, 'document');
-    // 保存：同一 TextDocument 对象的 URI 原地更新为文件路径
+    // Save: the same TextDocument object has its URI updated in place to the file path
     unsaved.uri = uri('file:///saved.abc');
     env.files.set('file:///saved.abc', unsaved.abc);
     manager.notifyDocumentSaved(asDocument(unsaved));
@@ -313,7 +313,7 @@ describe('文件生命周期与来源状态', () => {
       uri: 'file:///saved.abc', fileName: 'saved.abc', continued: true,
       version: pushed.version, revision: pushed.revision,
     });
-    // 换键后常规变更仍能找到该预览（绑定已迁移到新键）
+    // After rekeying, regular changes still find the preview (the binding has migrated to the new key)
     unsaved.version += 1;
     unsaved.abc += '\n% edit';
     manager.notifyDocumentChanged(asDocument(unsaved));
@@ -321,7 +321,7 @@ describe('文件生命周期与来源状态', () => {
     expect(last(panel, 'document')).toMatchObject({ uri: 'file:///saved.abc', version: 2 });
   });
 
-  it('[SPEC-LIFE-03] 重命名携带编辑：换版推送并标记 continued，不当作新文档', async () => {
+  it('[SPEC-LIFE-03] a rename carrying edits pushes a version switch marked continued, not treated as a new document', async () => {
     const panel = open(doc);
     applied(panel);
     const pushed = last(panel, 'document');
@@ -337,7 +337,7 @@ describe('文件生命周期与来源状态', () => {
     expect(message.abc).toContain('% edit');
   });
 
-  it('[SPEC-LIFE-04] 迁移到已绑定路径进入只读迁移页，目标入口按实例指向现有面板', async () => {
+  it('[SPEC-LIFE-04] migrating onto an already bound path enters the read-only migration page; the target entry points to the existing panel by instance', async () => {
     const other = new Doc('target');
     env.documents.push(other);
     const panel = open(doc);
@@ -349,7 +349,7 @@ describe('文件生命周期与来源状态', () => {
     expect(last(panel, 'source-state')).toMatchObject({ state: 'migrated', detail: 'target.abc' });
     expect(last(panel, 'playback').action).toBe('pause');
     expect(target.sent.filter((message) => message.type === 'playback')).toHaveLength(0);
-    // 只读迁移页不再接受文档变化推送，也不执行旧绑定的播放 / 起播
+    // The read-only migration page no longer accepts document change pushes and does not play / start the old binding
     const count = panel.sent.length;
     doc.version += 1;
     doc.abc += '\n% orphan';
@@ -358,12 +358,12 @@ describe('文件生命周期与来源状态', () => {
     manager.requestPlayFromCursor(asDocument(doc), 1);
     await vi.advanceTimersByTimeAsync(300);
     expect(panel.sent).toHaveLength(count);
-    // "打开迁移后的预览"指向实际存在目标面板
+    // "Open the migrated preview" points at the actually existing target panel
     panel.received({ type: 'reveal-target', viewId: last(panel, 'document').viewId });
     expect(target.reveal).toHaveBeenCalled();
   });
 
-  it('[SPEC-LIFE-06] [SPEC-LIFE-07] 无缓冲区删除进入不可用，重现后自动恢复推送归零', async () => {
+  it('[SPEC-LIFE-06] [SPEC-LIFE-07] deletion without a buffer enters unavailable; reappearance recovers automatically with a reset push', async () => {
     const panel = open(doc);
     applied(panel);
     const watcher = env.watchers.at(-1)!;
@@ -374,14 +374,14 @@ describe('文件生命周期与来源状态', () => {
     await flush();
     expect(last(panel, 'source-state')).toMatchObject({ state: 'unavailable', detail: '/book.abc' });
     expect(last(panel, 'playback').action).toBe('stop');
-    // 文件重现：重新获取并校验内容后归零推送，不自动播放
+    // File reappears: content is re-fetched and validated, then pushed with reset, no auto-play
     env.documents.push(doc);
     env.files.set('file:///book.abc', doc.abc);
     watcher.create();
     await vi.advanceTimersByTimeAsync(300);
     await flush();
     expect(last(panel, 'document')).toMatchObject({ uri: 'file:///book.abc', version: 1 });
-    // 恢复后回到常规推送路径
+    // After recovery the regular push path applies again
     doc.version += 1;
     doc.abc += '\n% resumed';
     manager.notifyDocumentChanged(asDocument(doc));
@@ -389,7 +389,7 @@ describe('文件生命周期与来源状态', () => {
     expect(last(panel, 'document').version).toBe(2);
   });
 
-  it('[SPEC-LIFE-06] 有缓冲区时磁盘缺失只提示不锁定，磁盘恢复清除提示', async () => {
+  it('[SPEC-LIFE-06] with a buffer a missing file only notifies without locking; disk recovery clears the notice', async () => {
     const panel = open(doc);
     applied(panel);
     const watcher = env.watchers.at(-1)!;
@@ -398,7 +398,7 @@ describe('文件生命周期与来源状态', () => {
     await vi.advanceTimersByTimeAsync(300);
     await flush();
     expect(last(panel, 'source-state')).toMatchObject({ state: 'disk-missing', detail: '/book.abc' });
-    // 不停音、不进入只读：缓冲区继续作为预览来源
+    // No silence, no read-only: the buffer remains the preview source
     expect(panel.sent.filter((message) => message.type === 'playback')).toHaveLength(0);
     env.files.set('file:///book.abc', doc.abc);
     watcher.change();
@@ -408,13 +408,13 @@ describe('文件生命周期与来源状态', () => {
     expect(last(panel, 'document').version).toBe(1);
   });
 
-  it('[SPEC-LIFE-08] 连续文件事件合并为一次存在性核验，短暂删除不误判丢失', async () => {
+  it('[SPEC-LIFE-08] back-to-back file events merge into one existence check; a brief deletion is not misjudged as loss', async () => {
     const panel = open(doc);
     applied(panel);
     const watcher = env.watchers.at(-1)!;
     env.documents = [];
     env.statCalls = 0;
-    // 原子替换：短暂删除后立即重建，全部在防抖窗口内
+    // Atomic replace: brief deletion followed immediately by recreation, all inside the debounce window
     watcher.delete();
     watcher.create();
     env.files.set('file:///book.abc', doc.abc);
@@ -424,7 +424,7 @@ describe('文件生命周期与来源状态', () => {
     expect(panel.sent.filter((message) => message.type === 'source-state')).toHaveLength(0);
   });
 
-  it('[SPEC-LIFE-05] 文件另存为不迁移绑定，原预览按原文件内容更新', async () => {
+  it('[SPEC-LIFE-05] save-as does not migrate the binding; the original preview updates from the original file content', async () => {
     const panel = open(doc);
     applied(panel);
     const pushed = last(panel, 'document');
@@ -442,7 +442,7 @@ describe('文件生命周期与来源状态', () => {
     expect(message.revision).toBe(pushed.revision + 1);
   });
 
-  it('[SPEC-LIFE-06] 未保存文档真正关闭进入来源不可用（来源对象已不存在）', () => {
+  it('[SPEC-LIFE-06] truly closing an unsaved document enters source-unavailable (the source object no longer exists)', () => {
     const unsaved = new Doc();
     unsaved.isUntitled = true;
     unsaved.uri = uri('untitled:1');
@@ -454,7 +454,7 @@ describe('文件生命周期与来源状态', () => {
     expect(last(panel, 'playback').action).toBe('stop');
   });
 
-  it('[SPEC-LIFE-07] 不可用后重新打开预览解除只读并按当前内容推送', async () => {
+  it('[SPEC-LIFE-07] reopening the preview after unavailable lifts read-only and pushes the current content', async () => {
     const panel = open(doc);
     applied(panel);
     env.documents = [];
@@ -469,7 +469,7 @@ describe('文件生命周期与来源状态', () => {
     await flush();
     expect(panel.reveal).toHaveBeenCalled();
     expect(last(panel, 'document')).toMatchObject({ uri: 'file:///book.abc' });
-    // 恢复后可继续接受常规更新
+    // After recovery regular updates are accepted again
     doc.version += 1;
     doc.abc += '\n% again';
     manager.notifyDocumentChanged(asDocument(doc));
@@ -478,10 +478,10 @@ describe('文件生命周期与来源状态', () => {
   });
 });
 
-describe('解析诊断与问题入口', () => {
+describe('parse diagnostics and the problems entry', () => {
   const item = { message: 'Unknown character ignored', start: 1, end: 2 };
 
-  it('[SPEC-STATE-06] 诊断按文档与版本发布，空列表与越界位置不保留', () => {
+  it('[SPEC-STATE-06] diagnostics are published per document and version; empty lists and out-of-range positions are not kept', () => {
     const panel = open(doc);
     const context = applied(panel);
     panel.received({ type: 'diagnostics', context, items: [item] });
@@ -492,19 +492,19 @@ describe('解析诊断与问题入口', () => {
       severity: 1,
       source: 'ABC Desk',
     });
-    // 过期 / 旧修订的晚到结果不覆盖当前诊断（SPEC-STATE-02 / 06）
+    // Late results from stale / old revisions do not override the current diagnostics (SPEC-STATE-02 / 06)
     panel.received({ type: 'diagnostics', context: { ...context, version: 99 }, items: [] });
     expect(env.diagnosticCalls.at(-1)).toBe(published);
     panel.received({ type: 'diagnostics', context: { ...context, revision: 9 }, items: [] });
     expect(env.diagnosticCalls.at(-1)).toBe(published);
-    // 越界位置视为无效；全空即清除
+    // Out-of-range positions are invalid; all-empty clears
     panel.received({ type: 'diagnostics', context, items: [{ ...item, end: 9999 }] });
     expect(env.diagnosticCalls.at(-1)).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
     panel.received({ type: 'diagnostics', context, items: [] });
     expect(env.diagnosticCalls.at(-1)).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
   });
 
-  it('[SPEC-STATE-06] 内容未变的可靠迁移让 Problems 条目跟随新身份', async () => {
+  it('[SPEC-STATE-06] a reliable migration with unchanged content moves the Problems entries to the new identity', async () => {
     const panel = open(doc);
     const context = applied(panel);
     panel.received({ type: 'diagnostics', context, items: [item] });
@@ -517,7 +517,7 @@ describe('解析诊断与问题入口', () => {
     expect(last(panel, 'document').continued).toBe(true);
   });
 
-  it('[SPEC-STATE-06] 迁移冲突转只读后清除并拒收旧绑定诊断', async () => {
+  it('[SPEC-STATE-06] after a migration conflict turns read-only, old-binding diagnostics are cleared and rejected', async () => {
     const panel = open(doc);
     const context = applied(panel);
     panel.received({ type: 'diagnostics', context, items: [item] });
@@ -529,14 +529,14 @@ describe('解析诊断与问题入口', () => {
     await flush();
     expect(last(panel, 'source-state').state).toBe('migrated');
     expect(env.diagnosticCalls.slice(count)[0]).toMatchObject({ kind: 'delete', uri: 'file:///book.abc' });
-    // 旧绑定的晚到诊断不重新进入 Problems，也不影响目标面板
+    // Late diagnostics from the old binding do not re-enter Problems and do not affect the target panel
     const after = env.diagnosticCalls.length;
     panel.received({ type: 'diagnostics', context, items: [item] });
     expect(env.diagnosticCalls).toHaveLength(after);
     expect(last(targetPanel, 'document').uri).toBe('file:///target.abc');
   });
 
-  it('[SPEC-STATE-06] 面板关闭清除诊断，“查看问题”只执行宿主命令', () => {
+  it('[SPEC-STATE-06] closing the panel clears diagnostics; "view problems" only runs the host command', () => {
     const panel = open(doc);
     const context = applied(panel);
     panel.received({ type: 'diagnostics', context, items: [item] });
@@ -550,7 +550,7 @@ describe('解析诊断与问题入口', () => {
   });
 });
 
-describe('练习记录持久化', () => {
+describe('practice record persistence', () => {
   const key = (uriText = 'file:///book.abc') => practiceStorageKey(uriText);
   const record = (speed = 70, keyboardCollapsed = true): PracticeRecord => ({
     version: PRACTICE_SCHEMA_VERSION,
@@ -561,13 +561,13 @@ describe('练习记录持久化', () => {
   const report = (context: PreviewContext, tunes: PracticeRecord['tunes']) => ({
     type: 'practice-state' as const, context, ui: { keyboardCollapsed: false, keyboardMode: 'tune' as const }, tunes,
   });
-  /** 用已知的工作区状态重建管理器：记录在建面板时读取。 */
+  /** Rebuild the manager with known workspace state: records are read when the panel is created. */
   function reopen(): void {
     manager.dispose();
     manager = createManager();
   }
 
-  it('[SPEC-SET-02] 记录只随视图首次推送，后续换版不再附带', async () => {
+  it('[SPEC-SET-02] the record is sent only with the view\'s first push and not attached to later version switches', async () => {
     env.storage.set(key(), record());
     reopen();
     const panel = open(doc);
@@ -585,7 +585,7 @@ describe('练习记录持久化', () => {
     expect(message.practice).toBeUndefined();
   });
 
-  it('[SPEC-SET-08] 无效记录安全回退默认值，且不删除原始存储', () => {
+  it('[SPEC-SET-08] an invalid record falls back safely to defaults without deleting the original storage', () => {
     const invalid = { version: 2, ui: {}, tunes: 'x' };
     env.storage.set(key(), invalid);
     reopen();
@@ -594,7 +594,7 @@ describe('练习记录持久化', () => {
     expect(env.storage.get(key())).toBe(invalid);
   });
 
-  it('[SPEC-SET-06] 关闭记忆开关不读不写，当前会话仍可继续上报', () => {
+  it('[SPEC-SET-06] with the remember setting off nothing is read or written; the current session can still report', () => {
     const stored = record();
     env.storage.set(key(), stored);
     env.remember = false;
@@ -605,29 +605,29 @@ describe('练习记录持久化', () => {
     expect(env.storage.get(key())).toBe(stored);
   });
 
-  it('[SPEC-SET-03] [SPEC-SET-08] 上报只合并当前可靠曲目，未变化与过期修订不重写', () => {
+  it('[SPEC-SET-03] [SPEC-SET-08] reports merge only currently reliable tunes; unchanged state and stale revisions do not rewrite', () => {
     const panel = open(doc);
     const context = applied(panel);
-    // 当前文档不存在的曲目（X:9）不进入持久记录
+    // A tune absent from the current document (X:9) does not enter the persistent record
     panel.received(report(context, [
       { id: '2', signature: 'sig-2', settings: { speed: 90, loop: false, chordsMuted: true, mutedVoices: [1] } },
       { id: '9', signature: null, settings: settings(80) },
     ]));
     const first = env.storage.get(key()) as PracticeRecord;
     expect(first.tunes.map((tune) => tune.id)).toEqual(['2']);
-    // 未提及的旧曲目保留，同一曲目以新记录覆盖
+    // Unmentioned old tunes are kept; the same tune is overwritten by the new record
     panel.received(report(context, [{ id: '1', signature: 'sig-1', settings: settings(60) }]));
     const merged = env.storage.get(key()) as PracticeRecord;
     expect(merged.tunes.map((tune) => tune.id)).toEqual(['1', '2']);
-    // 相同状态重复上报不触发写入
+    // Repeating the same state does not trigger a write
     panel.received(report(context, merged.tunes));
     expect(env.storage.get(key())).toBe(merged);
-    // 过期修订（内容已换版）不覆盖当前记录
+    // A stale revision (content already switched) does not override the current record
     panel.received(report({ ...context, revision: context.revision + 1 }, [{ id: '1', signature: null, settings: settings(25) }]));
     expect(env.storage.get(key())).toBe(merged);
   });
 
-  it('[SPEC-SET-07] 重置删除当前文件记录，重新就绪不再恢复', () => {
+  it('[SPEC-SET-07] reset deletes the current file\'s record and a new ready does not restore it', () => {
     env.storage.set(key(), record());
     reopen();
     const panel = open(doc);
@@ -638,7 +638,7 @@ describe('练习记录持久化', () => {
     expect(last(panel, 'document').practice).toBeUndefined();
   });
 
-  it('[SPEC-SET-02] 未保存文档只留会话内，首次保存后随绑定迁移落盘', async () => {
+  it('[SPEC-SET-02] an unsaved document keeps its record in the session only; after the first save it is persisted with the migrated binding', async () => {
     const unsaved = new Doc();
     unsaved.isUntitled = true;
     unsaved.uri = uri('untitled:1');
@@ -657,7 +657,7 @@ describe('练习记录持久化', () => {
     expect(last(panel, 'document')).toMatchObject({ uri: 'file:///saved.abc', continued: true });
   });
 
-  it('[SPEC-LIFE-04] [SPEC-SET-08] 迁移目标已有记录时目标优先，不覆盖不删除来源', async () => {
+  it('[SPEC-LIFE-04] [SPEC-SET-08] when the migration target already has a record the target wins; the source is neither overwritten nor deleted', async () => {
     const source = record();
     const target = record(40, false);
     env.storage.set(key(), source);
@@ -671,12 +671,12 @@ describe('练习记录持久化', () => {
     expect(last(panel, 'source-state').state).toBe('migrated');
     expect(env.storage.get(key('file:///moved.abc'))).toBe(target);
     expect(env.storage.get(key())).toBe(source);
-    // 只读迁移页的迟到上报不写入
+    // A late report from the read-only migration page is not written
     panel.received(report(context, [{ id: '1', signature: 'sig-1', settings: settings(25) }]));
     expect(env.storage.get(key())).toBe(source);
   });
 
-  it('[SPEC-SET-08] 无工作区不落盘', () => {
+  it('[SPEC-SET-08] nothing is persisted without a workspace', () => {
     env.folders = [];
     const panel = open(doc);
     panel.received(report(applied(panel), [{ id: '1', signature: 'sig-1', settings: settings(55) }]));

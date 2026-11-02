@@ -1,5 +1,5 @@
-// 导出核心模块的加固测试：曲目解析、文件名建议与 MIDI / SVG 生成的关键行为与边界。
-// EXP 域的验收为 manual（登记见 docs/manual-checks.md），此处只覆盖可离屏验证的纯逻辑。
+// Hardening tests for the export core modules: tune parsing, file name suggestion and the key behaviors and edge cases of MIDI / SVG generation.
+// The EXP domain is verified manually (registered in docs/manual-checks.md); only pure logic that can be verified off-screen is covered here.
 import { describe, expect, it } from 'vitest';
 import { loadAbcjs } from '../src/core/exports/abcjs';
 import { sanitizeFileNameStem, suggestExportFileName } from '../src/core/exports/filename';
@@ -22,8 +22,8 @@ GABc dedB |`;
 
 const MIDI_HEADER = new Uint8Array([0x4d, 0x54, 0x68, 0x64]); // "MThd"
 
-describe('listTunes 曲目解析', () => {
-  it('多曲目返回按序的序号、X:、标题与递增的起始偏移', async () => {
+describe('listTunes tune parsing', () => {
+  it('multiple tunes return ordered index, X:, title and increasing start offsets', async () => {
     const tunes = await listTunes(MULTI_TUNE);
     expect(tunes.map((tune) => ({ sequence: tune.sequence, id: tune.id, title: tune.title }))).toEqual([
       { sequence: 1, id: '1', title: 'First Tune' },
@@ -32,39 +32,39 @@ describe('listTunes 曲目解析', () => {
     expect(tunes[1].startPos).toBeGreaterThan(tunes[0].startPos);
   });
 
-  it('每个曲目文本自包含：含自身 X: 行与文件级 %% 指令，且不含其他曲目', async () => {
+  it('each tune text is self-contained: has its own X: line and file-level %% directives, and no other tune', async () => {
     const tunes = await listTunes(MULTI_TUNE);
     expect(tunes[0].abc).toContain('X:1');
     expect(tunes[0].abc).not.toContain('Second Tune');
     expect(tunes[1].abc).toContain('X:2');
     expect(tunes[1].abc).not.toContain('First Tune');
-    // 文件级指令已并入各曲目且只出现一次（不得再与公共头部重复拼接）
+    // File-level directives are merged into each tune exactly once (never re-concatenated with the shared header)
     for (const tune of tunes) {
       expect(tune.abc.match(/%%MIDI program 40/g)).toHaveLength(1);
     }
   });
 
-  it('单曲与空白文本都返回一首（判空不能依赖曲目数量）', async () => {
+  it('single tune and blank text both return one tune (emptiness must not rely on the tune count)', async () => {
     expect(await listTunes('X:1\nT:Solo\nK:C\nCDEF|')).toHaveLength(1);
     expect(await listTunes('')).toHaveLength(1);
   });
 });
 
-describe('tuneHasNotes 判空', () => {
-  it('有音符为真，空白文本为假', async () => {
+describe('tuneHasNotes emptiness check', () => {
+  it('true with notes, false for blank text', async () => {
     const abcjs = await loadAbcjs();
     expect(tuneHasNotes(abcjs.parseOnly('X:1\nK:C\nCDEF GABc |]')[0])).toBe(true);
     expect(tuneHasNotes(abcjs.parseOnly('')[0])).toBe(false);
   });
 
-  it('合法全休止符不算空白（rest 也是 note 条目）', async () => {
+  it('a valid all-rest score is not blank (rests are note entries too)', async () => {
     const abcjs = await loadAbcjs();
     expect(tuneHasNotes(abcjs.parseOnly('X:1\nK:C\nz8 |]')[0])).toBe(true);
   });
 });
 
-describe('suggestExportFileName 命名建议', () => {
-  it('已保存单曲使用源文件基本名', () => {
+describe('suggestExportFileName naming suggestion', () => {
+  it('a saved single tune uses the source file base name', () => {
     expect(
       suggestExportFileName({
         documentStem: 'tunes',
@@ -76,7 +76,7 @@ describe('suggestExportFileName 命名建议', () => {
     ).toBe('tunes.mid');
   });
 
-  it('未保存新文档使用曲名，无曲名用 Untitled', () => {
+  it('an unsaved new document uses the tune title, or Untitled without one', () => {
     expect(
       suggestExportFileName({ tuneTitle: 'My Reel', tuneCount: 1, tuneSequence: 1, extension: 'svg' }),
     ).toBe('My Reel.svg');
@@ -85,7 +85,7 @@ describe('suggestExportFileName 命名建议', () => {
     ).toBe('Untitled.svg');
   });
 
-  it('多曲目附加序号与曲名；基本名已含曲名时不重复', () => {
+  it('multiple tunes append index and title; no repetition when the base name already contains the title', () => {
     expect(
       suggestExportFileName({
         documentStem: 'tunes',
@@ -106,13 +106,13 @@ describe('suggestExportFileName 命名建议', () => {
     ).toBe('Second 2.mid');
   });
 
-  it('清洗控制字符与保留字符并压缩空白', () => {
+  it('strips control and reserved characters and collapses whitespace', () => {
     expect(sanitizeFileNameStem('a<b>c:d"e/f\\g|h?i*j')).toBe('a b c d e f g h i j');
     expect(sanitizeFileNameStem('tune\nname\t x')).toBe('tune name x');
     expect(sanitizeFileNameStem('   ')).toBe('');
   });
 
-  it('超长基本名截断且不留尾随空格', () => {
+  it('truncates an overlong base name without a trailing space', () => {
     expect(sanitizeFileNameStem('x'.repeat(120))).toBe('x'.repeat(80));
     const spaced = sanitizeFileNameStem(`${'x'.repeat(79)} y`);
     expect(spaced.length).toBeLessThanOrEqual(80);
@@ -121,24 +121,24 @@ describe('suggestExportFileName 命名建议', () => {
 });
 
 describe('generateMidiBytes', () => {
-  it('生成标准 MIDI 文件（MThd 头）', async () => {
+  it('produces a standard MIDI file (MThd header)', async () => {
     const bytes = await generateMidiBytes('X:1\nT:Tiny\nM:4/4\nL:1/8\nK:C\nCDEF GABc |]');
     expect(bytes?.slice(0, 4)).toEqual(MIDI_HEADER);
   });
 
-  it('从多曲目确认的第 2 首自包含文本可直接生成', async () => {
+  it('the self-contained text of the confirmed 2nd tune in a multi-tune file generates directly', async () => {
     const tunes = await listTunes(MULTI_TUNE);
     const bytes = await generateMidiBytes(tunes[1].abc);
     expect(bytes?.slice(0, 4)).toEqual(MIDI_HEADER);
   });
 
-  it('无音符内容不生成文件', async () => {
+  it('content without notes produces no file', async () => {
     await expect(generateMidiBytes('')).resolves.toBeUndefined();
   });
 });
 
 describe('generateSvgText', () => {
-  it('生成白底黑谱的独立 SVG 文本', async () => {
+  it('produces standalone SVG text with black notation on white', async () => {
     const svg = await generateSvgText('X:1\nT:Tiny\nM:4/4\nL:1/8\nK:C\nCDEF GABc |]');
     expect(svg).toBeDefined();
     expect(svg).toContain('<svg');
@@ -149,24 +149,24 @@ describe('generateSvgText', () => {
     expect(svg).not.toContain('--vscode-');
   });
 
-  it('不携带脚本与事件处理器', async () => {
+  it('carries no scripts or event handlers', async () => {
     const svg = await generateSvgText('X:1\nT:Tiny\nK:C\nCDEF |]');
     expect(svg).not.toContain('<script');
     expect(svg).not.toMatch(/\son\w+=/);
   });
 
-  it('多行长谱完整输出（内容不被截断）', async () => {
+  it('a long multi-line score is output in full (content is not truncated)', async () => {
     const body = Array.from({ length: 9 }, () => 'GABc dedB | cBAG FED2 |').join('\n');
     const svg = await generateSvgText(`X:1\nT:Long\nM:4/4\nL:1/8\nK:G\n${body}|]`);
     const height = Number(/<svg[^>]*height="([0-9.]+)"/.exec(svg ?? '')?.[1]);
     expect(height).toBeGreaterThan(400);
   });
 
-  it('无音符内容不生成空壳', async () => {
+  it('content without notes produces no empty shell', async () => {
     await expect(generateSvgText('')).resolves.toBeUndefined();
   });
 
-  it('导出后还原全局 DOM 环境', async () => {
+  it('restores the global DOM environment after export', async () => {
     expect('document' in globalThis).toBe(false);
     await generateSvgText('X:1\nK:C\nCDEF |]');
     expect('document' in globalThis).toBe(false);

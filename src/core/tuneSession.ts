@@ -11,7 +11,7 @@ export function sameSnapshot(first: TuneSnapshot | undefined, second: TuneSnapsh
   return first?.uri === second.uri && first.version === second.version && first.abc === second.abc;
 }
 
-/** SPEC-DOC-02～05：只保存当前预览内状态；无音频、DOM 或宿主依赖。 */
+/** SPEC-DOC-02~05: keeps only the state inside the current preview; no audio, DOM or host dependency. */
 export class TuneSession {
   snapshot: TuneSnapshot | undefined;
   catalog: TuneCatalog = createTuneCatalog('');
@@ -26,7 +26,7 @@ export class TuneSession {
 
   get current(): PreviewTune | undefined { return this.selected === null ? undefined : this.catalog.tunes[this.selected]; }
 
-  /** 返回是否应立即重渲染；同快照重复投递不改变位置或选曲。 */
+  /** Returns whether an immediate re-render is needed; re-delivering the same snapshot changes neither position nor selection. */
   receive(snapshot: TuneSnapshot, defer: boolean): boolean {
     if (sameSnapshot(this.snapshot, snapshot)) return false;
     if (this.snapshot?.uri === snapshot.uri && snapshot.version < this.snapshot.version) return false;
@@ -56,7 +56,7 @@ export class TuneSession {
     } else if (previous !== undefined && this.identitySelection !== null) {
       selected = matchTune(previous, this.identitySelection, catalog);
     }
-    // 临时空白或文档级结构失败不把旧记录当作已删除；有效目录则逐项迁移。
+    // A temporarily blank document or a document-level structural failure does not treat the old record as deleted; a valid index is migrated item by item.
     const usable = catalog.tunes.length > 0 && !catalog.initialBlocked && catalog.tunes.some((tune) => tune.reliable);
     if (!sameDocument) this.records.clear();
     if (usable) {
@@ -81,7 +81,7 @@ export class TuneSession {
   select(index: number): boolean {
     if (!this.catalog.tunes[index]?.reliable) return false;
     this.selected = index;
-    // 显式选择可靠的独立片段，建立当前目录内的新身份基准。
+    // Explicitly selecting a reliable standalone fragment establishes a new identity baseline inside the current index.
     if (this.identityCatalog !== this.catalog) {
       this.records.clear();
       this.identityCatalog = this.catalog;
@@ -112,8 +112,8 @@ export class TuneSession {
   }
 
   /**
-   * 可靠迁移（SPEC-LIFE-03）：宿主已确认新 URI 与当前文档属于同一练习时更新身份标识，
-   * 使后续快照仍视为同一文档——保留选曲与设置记录，不当作新文档清空。
+   * Reliable migration (SPEC-LIFE-03): once the host has confirmed the new URI belongs to the same practice, update the identity
+   * so later snapshots are still treated as the same document - keep the selection and settings instead of clearing it as a new one.
    */
   rekey(uri: string): void {
     if (this.snapshot !== undefined && this.snapshot.uri !== uri) {
@@ -130,8 +130,8 @@ export class TuneSession {
   }
 
   /**
-   * 恢复本文件已保存的曲目记录（SPEC-SET-02 ~ 04）：只按真实且唯一的 X: 匹配，
-   * 记录的声部签名标记为待核验——与当前清单不符时清除静音并提示。
+   * Restore the saved tune records of this file (SPEC-SET-02 ~ 04): matched only by a real and unique X:;
+   * the recorded voice signature is marked pending - if it differs from the current list the mutes are cleared with a notice.
    */
   restore(records: readonly PracticeTuneRecord[]): void {
     const byId = new Map<string, PracticeTuneRecord>();
@@ -148,7 +148,7 @@ export class TuneSession {
     }
   }
 
-  /** 导出可持久化的曲目记录（SPEC-SET-08）：只含真实 X: 与轻量设置，签名不可靠时不留静音。 */
+  /** Export persistable tune records (SPEC-SET-08): real X: and lightweight settings only; mutes are dropped when the signature is unreliable. */
   exportRecords(): PracticeTuneRecord[] {
     const exported: PracticeTuneRecord[] = [];
     const seen = new Set<string>();
@@ -161,7 +161,7 @@ export class TuneSession {
         signature: record.signature,
         settings: {
           ...record.settings,
-          // 持久形状与校验一致：静音按编号排序去重；签名不可靠时不留静音
+          // Same shape and validation as persistence: mutes sorted by index and deduplicated; no mutes when the signature is unreliable
           mutedVoices: record.signature === null
             ? []
             : [...new Set(record.settings.mutedVoices)].sort((first, second) => first - second),
@@ -171,7 +171,7 @@ export class TuneSession {
     return exported;
   }
 
-  /** 重置本文件（SPEC-SET-07）：清空全部曲目记录；当前选曲与播放状态由调用方另行处理。 */
+  /** Reset this file (SPEC-SET-07): clear all tune records; the caller handles the current selection and playback state separately. */
   clearRecords(): void {
     this.records.clear();
   }

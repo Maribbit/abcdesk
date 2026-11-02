@@ -1,9 +1,9 @@
 /**
- * 导出命令流程（SPEC-EXP-01 ~ 08）：MIDI / SVG 两个公开命令共用，
- * 从命令目标锁定来源快照，经曲目确认与独立准备（progress 可取消）后，
- * 走原生保存对话框；保存对话框返回与开始写入前都重新核验任务有效性（SPEC-EXP-03、PERF-09）。
+ * Export command flow (SPEC-EXP-01 ~ 08): shared by the MIDI / SVG public commands.
+ * The source snapshot is locked from the command target; after tune confirmation and independent preparation (cancellable progress)
+ * the native save dialog is shown; task validity is re-checked both when the dialog returns and before writing (SPEC-EXP-03, PERF-09).
  *
- * 导出不依赖预览 / 播放：没有预览也可用，已有预览时不改变其状态（SPEC-EXP-04）。
+ * Export does not depend on preview / playback: it works without a preview and leaves an existing preview's state untouched (SPEC-EXP-04).
  */
 import * as vscode from 'vscode';
 import { suggestExportFileName } from '../core/exports/filename';
@@ -16,31 +16,31 @@ import {
 import { choosePreviewTarget } from '../core/target';
 import { PreviewPanelManager } from './previewPanel';
 
-/** 导出格式：两个命令分别准备与判断能力，不相互牵连（SPEC-EXP-04）。 */
+/** Export format: the two commands prepare and judge capability separately, without affecting each other (SPEC-EXP-04). */
 export type ExportFormat = 'midi' | 'svg';
 
-/** 导出来源：命令启动时锁定（SPEC-EXP-01 / 03），此后焦点变化不改变目标。 */
+/** Export source: locked when the command starts (SPEC-EXP-01 / 03); later focus changes do not alter the target. */
 interface ExportSource {
   uri: vscode.Uri;
-  /** 是否从预览发起：该面板关闭后取消任务（SPEC-EXP-03）。 */
+  /** Whether started from a preview: the task is cancelled when that panel closes (SPEC-EXP-03). */
   fromPreview: boolean;
 }
 
-/** 来源文档内容快照（SPEC-EXP-01）：有打开的编辑器文档时以缓冲区为准，否则读取文件。 */
+/** Snapshot of the source document (SPEC-EXP-01): the buffer wins when an editor document is open, otherwise the file is read. */
 interface ExportSnapshot {
   text: string;
-  /** 是否包含未保存修改（导出前明确提示）。 */
+  /** Whether unsaved changes are included (stated explicitly before export). */
   dirty: boolean;
 }
 
-/** 准备结果：区分空内容 / 取消 / 失败，交由流程分别反馈（SPEC-EXP-08）。 */
+/** Preparation result: distinguishes empty content / cancelled / failed so the flow can report each separately (SPEC-EXP-08). */
 type PreparedExport =
   | { kind: 'ready'; bytes: Uint8Array }
   | { kind: 'empty' }
   | { kind: 'cancelled' }
   | { kind: 'failed'; message: string };
 
-/** 导出命令入口：MIDI / SVG 共用流程，仅准备阶段与文件类型不同。 */
+/** Export command entry: shared MIDI / SVG flow; only the preparation step and file type differ. */
 export async function runExportCommand(
   previews: PreviewPanelManager,
   format: ExportFormat,
@@ -56,7 +56,7 @@ export async function runExportCommand(
     void vscode.window.showInformationMessage(vscode.l10n.t('The source document is unavailable.'));
     return;
   }
-  // SPEC-EXP-01：来源版本落后或含未保存修改时明确提示，不阻止导出
+  // SPEC-EXP-01: when the source version is behind or has unsaved changes, say so explicitly without blocking the export
   if (source.fromPreview && previews.isPreviewStale(source.uri.toString())) {
     void vscode.window.showInformationMessage(
       vscode.l10n.t('Exporting the current document, not the version shown in the preview.'),
@@ -75,12 +75,12 @@ export async function runExportCommand(
   }
   const tune = await pickTune(tunes, source.uri);
   if (tune === undefined) {
-    return; // 取消选择无副作用（SPEC-EXP-02）
+    return; // Cancelling the selection has no side effects (SPEC-EXP-02)
   }
 
   const prepared = await prepareExport(tune.abc, format);
   if (prepared.kind === 'cancelled') {
-    return; // 准备取消后不得进入保存写入（PERF-09）
+    return; // After a cancelled preparation the save / write step must not run (PERF-09)
   }
   if (prepared.kind === 'empty') {
     void vscode.window.showInformationMessage(vscode.l10n.t('The document has no notes to export.'));
@@ -91,7 +91,7 @@ export async function runExportCommand(
     return;
   }
 
-  // 保存流程（SPEC-EXP-07）：原生对话框；建议名可修改，取消不写文件
+  // Save flow (SPEC-EXP-07): native dialog; the suggested name is editable and cancelling writes nothing
   const fileName = suggestExportFileName({
     documentStem: source.uri.scheme === 'untitled' ? undefined : documentStem(source.uri),
     tuneTitle: tune.title,
@@ -111,7 +111,7 @@ export async function runExportCommand(
     return;
   }
 
-  // 开始写入前的最后校验（SPEC-EXP-03 / PERF-09）：覆盖来源、预览关闭与内容变化都不进入写入
+  // Final check before writing (SPEC-EXP-03 / PERF-09): overwriting the source, a closed preview or changed content all skip the write
   if (saveUri.toString() === source.uri.toString()) {
     void vscode.window.showInformationMessage(
       vscode.l10n.t('The export cannot overwrite the source ABC file.'),
@@ -129,19 +129,19 @@ export async function runExportCommand(
   }
 
   try {
-    // SPEC-ENV-05：保留完整 URI，由 VS Code 路由到对应文件系统提供者。
+    // SPEC-ENV-05: keep the full URI so VS Code routes it to the matching file system provider.
     await vscode.workspace.fs.writeFile(saveUri, prepared.bytes);
   } catch (error) {
     void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', errorMessage(error)));
     return;
   }
-  // 仅在写入成功后报告成功（SPEC-EXP-07）：不自动打开导出文件
+  // Report success only after the write succeeded (SPEC-EXP-07): the exported file is not opened automatically
   void vscode.window.showInformationMessage(vscode.l10n.t('Exported to {0}.', saveUri.fsPath));
 }
 
 /**
- * 解析导出来源（SPEC-EXP-01 / 03）：预览在前台时使用其绑定文档（标签关闭不失效），
- * 否则使用调用前的活动 ABC 编辑器；无有效目标时不回退、不弹选择器。
+ * Resolve the export source (SPEC-EXP-01 / 03): a foreground preview uses its bound document (still valid when the tab is closed),
+ * otherwise the active ABC editor before the invocation; without a valid target there is no fallback and no picker.
  */
 function resolveExportSource(previews: PreviewPanelManager): ExportSource | undefined {
   const bound = previews.activeBoundUri();
@@ -160,7 +160,7 @@ function resolveExportSource(previews: PreviewPanelManager): ExportSource | unde
   return target === undefined ? undefined : { uri: editor.document.uri, fromPreview: false };
 }
 
-/** 读取来源快照（SPEC-EXP-01）：编辑器缓冲区优先（含未保存修改），否则读取文件；不可用时返回 undefined。 */
+/** Read the source snapshot (SPEC-EXP-01): editor buffer first (including unsaved changes), otherwise the file; undefined when unavailable. */
 async function readSnapshot(uri: vscode.Uri): Promise<ExportSnapshot | undefined> {
   const open = vscode.workspace.textDocuments.find(
     (document) => document.uri.toString() === uri.toString(),
@@ -175,15 +175,15 @@ async function readSnapshot(uri: vscode.Uri): Promise<ExportSnapshot | undefined
   }
 }
 
-/** 写入前复核来源内容未变化（SPEC-EXP-03）；来源不可用同样视为任务失效，不自动改用新版。 */
+/** Re-check before writing that the source content is unchanged (SPEC-EXP-03); an unavailable source also invalidates the task instead of switching to a new version. */
 async function snapshotUnchanged(source: vscode.Uri, expected: string): Promise<boolean> {
   const current = await readSnapshot(source);
   return current !== undefined && current.text === expected;
 }
 
 /**
- * 曲目确认（SPEC-EXP-02）：单曲文件直接准备，不显示选择列表；
- * 多曲目列表含序号、`X:` 与标题，按调用时光标所属曲目预选但仍须确认。
+ * Tune confirmation (SPEC-EXP-02): a single-tune file is prepared directly without a list;
+ * a multi-tune list shows index, `X:` and title, preselects the tune under the cursor at invocation but still requires confirmation.
  */
 async function pickTune(tunes: ExportTune[], sourceUri: vscode.Uri): Promise<ExportTune | undefined> {
   if (tunes.length <= 1) {
@@ -204,7 +204,7 @@ async function pickTune(tunes: ExportTune[], sourceUri: vscode.Uri): Promise<Exp
   return tunes[picked.index];
 }
 
-/** 曲目列表条目文本：序号、`X:`（有值时）与标题（有值时）。 */
+/** Tune list item text: index, `X:` (when present) and title (when present). */
 function tuneLabel(tune: ExportTune): string {
   const parts = [`${tune.sequence}.`];
   if (tune.id !== '') {
@@ -218,8 +218,8 @@ function tuneLabel(tune: ExportTune): string {
 }
 
 /**
- * 预选曲目（SPEC-EXP-02）：活动编辑器属于来源文档时取光标所属曲目；
- * 无可靠对应时为首曲，不代替用户选择（仍须在列表中确认）。
+ * Preselected tune (SPEC-EXP-02): when the active editor is the source document, the tune under the cursor;
+ * the first tune when there is no reliable match - it never replaces the user's choice (confirmation in the list is still required).
  */
 function preselectTuneIndex(tunes: ExportTune[], sourceUri: vscode.Uri): number {
   const editor = vscode.window.activeTextEditor;
@@ -236,8 +236,8 @@ function preselectTuneIndex(tunes: ExportTune[], sourceUri: vscode.Uri): number 
 }
 
 /**
- * 准备导出数据（SPEC-EXP-04 / 08）：通知形态进度可取消，无预览也可用；
- * 取消边界：准备开始前与生成完成后各检查一次，取消不进入保存（PERF-09）。
+ * Prepare export data (SPEC-EXP-04 / 08): notification-style cancellable progress, works without a preview;
+ * cancellation boundaries: checked once before preparation starts and once after generation; cancelled tasks never reach save (PERF-09).
  */
 async function prepareExport(abcText: string, format: ExportFormat): Promise<PreparedExport> {
   const title = format === 'midi' ? 'Exporting MIDI…' : 'Exporting SVG…';
@@ -261,7 +261,7 @@ async function prepareExport(abcText: string, format: ExportFormat): Promise<Pre
   );
 }
 
-/** 按格式生成字节（SPEC-EXP-05 / 06）：MIDI 直接生成二进制；SVG 生成文本后按 UTF-8 编码。 */
+/** Generate bytes per format (SPEC-EXP-05 / 06): MIDI is produced as binary directly; SVG text is encoded as UTF-8. */
 async function buildExportBytes(
   abcText: string,
   format: ExportFormat,
@@ -273,7 +273,7 @@ async function buildExportBytes(
   return svgText === undefined ? undefined : new TextEncoder().encode(svgText);
 }
 
-/** 默认保存位置（SPEC-EXP-07）：已保存文档取源文件同目录；未保存新文档取首个工作区文件夹。 */
+/** Default save location (SPEC-EXP-07): the source file's directory for saved documents; the first workspace folder for unsaved ones. */
 function defaultSaveUri(source: vscode.Uri, fileName: string): vscode.Uri | undefined {
   if (source.scheme === 'untitled') {
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -282,7 +282,7 @@ function defaultSaveUri(source: vscode.Uri, fileName: string): vscode.Uri | unde
   return vscode.Uri.joinPath(vscode.Uri.joinPath(source, '..'), fileName);
 }
 
-/** 来源文件基本名（不含扩展名），用于默认导出文件名（SPEC-EXP-07）。 */
+/** Source file base name (without extension) used for the default export file name (SPEC-EXP-07). */
 function documentStem(uri: vscode.Uri): string {
   const base = uri.path.slice(uri.path.lastIndexOf('/') + 1);
   const dot = base.lastIndexOf('.');

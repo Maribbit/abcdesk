@@ -62,7 +62,7 @@ beforeEach(async () => {
   document.documentElement.lang = 'en';
   vi.stubGlobal('acquireVsCodeApi', () => ({ postMessage: (value: unknown) => {
     const parsed = parseWebviewMessage(value);
-    expect(parsed, 'webview 必须发送完整的新协议消息').toBeDefined();
+    expect(parsed, 'the webview must send complete new-protocol messages').toBeDefined();
     sent.push(parsed!);
   } }));
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
@@ -90,8 +90,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('选曲协调与真实 webview 入口', () => {
-  it('[SPEC-DOC-01] [SPEC-DOC-03] 默认第一首，浏览取消与重复当前选择不停音且不准备音色', () => {
+describe('tune selection coordination and the real webview entry', () => {
+  it('[SPEC-DOC-01] [SPEC-DOC-03] defaults to the first tune; browsing, cancelling and repeating the current selection neither silence nor prepare soundfonts', () => {
     send(snapshot());
     expect(element('tunes').textContent).toContain('Tune 1 / 2');
     expect(synths).toHaveLength(0);
@@ -106,7 +106,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(context()).toEqual(before);
   });
 
-  it('[SPEC-DOC-03] 逐曲设置恢复且位置归零，普通光标不跨曲', () => {
+  it('[SPEC-DOC-03] per-tune settings are restored with the position reset; an ordinary cursor does not cross tunes', () => {
     send(snapshot());
     state.controller!.setSpeed(70);
     state.controller!.setLoopEnabled(true);
@@ -124,7 +124,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(synths).toHaveLength(0);
   });
 
-  it('[SPEC-DOC-04] 播放中目录冻结，手选往返应用防抖中的最新版本且只提交一次', async () => {
+  it('[SPEC-DOC-04] the catalog is frozen while playing; a manual selection round trip applies the latest debounced version and commits once', async () => {
     send(snapshot());
     await playing();
     const old = synths[0];
@@ -142,7 +142,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(synths).toHaveLength(1);
   });
 
-  it('[SPEC-DOC-05] 防抖最新版本中的改标识不能复用旧下标；无 X: 单曲更新必须确认', () => {
+  it('[SPEC-DOC-05] a re-identification in the latest debounced version cannot reuse the old index; a single tune update without X: must be confirmed', () => {
     send(snapshot());
     choose(1, snapshot(`${first}\n\n${second.replace('X:2', 'X:9')}`, 2));
     expect(element<HTMLButtonElement>('play').disabled).toBe(true);
@@ -157,7 +157,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(element<HTMLButtonElement>('play').disabled).toBe(true);
   });
 
-  it('[SPEC-DOC-04] 停止和隐藏取消选择等待；旧响应和旧光标无效', () => {
+  it('[SPEC-DOC-04] stop and hide cancel the selection wait; old responses and old cursors are void', () => {
     send(snapshot());
     const oldContext = context();
     element('tunes').querySelector('button')!.click();
@@ -170,7 +170,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(element<HTMLButtonElement>('play-from-here').disabled).toBe(true);
   });
 
-  it('[SPEC-PLAY-12] 首次从第二首起播先验证目标，不被首曲错误阻断', async () => {
+  it('[SPEC-PLAY-12] the first start from the second tune validates the target first and is not blocked by an error in the first tune', async () => {
     const abc = `X:1\nK:wrong\n???\n\n${second}`;
     send({ ...snapshot(abc), initialRequest: { requestId: 1, offset: abc.indexOf('GABc') } });
     expect(element('tunes').querySelector('button')!.textContent).toContain('Second');
@@ -184,7 +184,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(synths[0].start).not.toHaveBeenCalled();
   });
 
-  it('[SPEC-PLAY-12] 无效跨曲目标保持原音乐，有效目标切曲，待更新时拒绝起播', async () => {
+  it('[SPEC-PLAY-12] an invalid cross-tune target keeps the current music, a valid one switches tunes, a pending update rejects the start', async () => {
     send(snapshot());
     await playing();
     send({ type: 'play-from-cursor', context: context(), requestId: 1, offset: book.indexOf('T:Second') });
@@ -198,7 +198,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(last('linkage-unavailable').reason).toBe('update-pending');
   });
 
-  it('[SPEC-PLAY-12] 新的无效源码起播取消未发声的旧准备意图', async () => {
+  it('[SPEC-PLAY-12] a new invalid source start cancels an old prepare intent that has not sounded yet', async () => {
     send(snapshot());
     send({ type: 'play-from-cursor', context: context(), requestId: 1, offset: book.indexOf('GABc') });
     await flush();
@@ -209,7 +209,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(state.controller!.getStatus().phase).toBe('idle');
   });
 
-  it('[SPEC-A11Y-04] [SPEC-DOC-01] 长标题安全呈现，Home/End只浏览，空格提交，外部取消不抢焦点', () => {
+  it('[SPEC-A11Y-04] [SPEC-DOC-01] long titles render safely, Home/End only browse, Space commits, external cancel does not steal focus', () => {
     const abc = first.replace('First', '<img src=x onerror=alert(1)>' + '长标题'.repeat(80)) + '\n\n' + second;
     send(snapshot(abc));
     const trigger = element('tunes').querySelector('button')!;
@@ -234,7 +234,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(synths).toHaveLength(0);
   });
 
-  it('[SPEC-L10N-01] 中文缺失标题/标识回退与确认按钮不显示资源键', () => {
+  it('[SPEC-L10N-01] Chinese fallbacks for missing title/identifier and the confirm button show no resource keys', () => {
     document.documentElement.lang = 'zh-cn';
     send(snapshot('X:\nK:C\nC|\n\nX:2\nK:C\nD|'));
     expect(element('tunes').textContent).toContain('无标题曲目');
@@ -243,7 +243,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(element('confirm-tune').textContent).toBe('确认此曲目');
   });
 
-  it('[SPEC-STATE-03] 失败参考谱保留真实旧曲归属，不标成刚选的坏曲', () => {
+  it('[SPEC-STATE-03] the failed reference score keeps the real old tune ownership and is not labelled as the just-selected broken tune', () => {
     const abc = `${first}\n\nX:2\nT:Broken\nK:wrong\n???`;
     send(snapshot(abc));
     choose(1, snapshot(abc));
@@ -251,7 +251,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(element<HTMLButtonElement>('play').disabled).toBe(true);
   });
 
-  it('[SPEC-ENV-04] 停止和切曲后的旧 toggle/起播响应不能重新发声，目标变化取消旧往返', async () => {
+  it('[SPEC-ENV-04] old toggle/start responses after stop and tune switch cannot sound again; a target change cancels the old round trip', async () => {
     send(snapshot());
     const old = context();
     choose(1);
@@ -272,7 +272,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(synths).toHaveLength(1);
   });
 
-  it('[SPEC-SET-04] 渲染失败保留旧设置，声部签名变化正式应用后清除整组静音', () => {
+  it('[SPEC-SET-04] a render failure keeps the old settings; a voice signature change clears the whole mute set once formally applied', () => {
     const voices = 'X:1\nV:top name="旋律"\nV:low name="伴奏"\nK:C\n[V:top] CDEF|\n[V:low] C,4|';
     send(snapshot(voices));
     state.controller!.setSpeed(70);
@@ -291,7 +291,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(synths).toHaveLength(0);
   });
 
-  it('[SPEC-DOC-02] 初始化意图只消费一次，取消选曲不重复报告无映射', () => {
+  it('[SPEC-DOC-02] the initialization intent is consumed once; cancelling tune selection does not report no-mapping again', () => {
     send({ ...snapshot(), initialRequest: { requestId: 1, offset: book.indexOf('GABc') } });
     element('tunes').querySelector('button')!.click();
     click('tune-option-0');
@@ -300,7 +300,7 @@ describe('选曲协调与真实 webview 入口', () => {
     expect(state.controller!.getStatus().phase).toBe('idle');
   });
 
-  it('[SPEC-DOC-02] 同快照和纯标签刷新不重置设置、位置或选曲', () => {
+  it('[SPEC-DOC-02] the same snapshot and label-only refreshes do not reset settings, position or tune selection', () => {
     send(snapshot());
     choose(1);
     state.controller!.setSpeed(75);
@@ -314,30 +314,30 @@ describe('选曲协调与真实 webview 入口', () => {
   });
 });
 
-describe('练习设置恢复与重置', () => {
+describe('practice settings restore and reset', () => {
   const practice = (ui: PracticeUiPreferences = { keyboardCollapsed: false, keyboardMode: 'tune' }) => ({
     version: 1 as const,
     ui,
     tunes: [{ id: '1', signature: null, settings: { speed: 70, loop: true, chordsMuted: true, mutedVoices: [0] } }],
   });
 
-  it('[SPEC-SET-02] [SPEC-SET-03] [SPEC-SET-05] 首次推送恢复音乐设置与键盘偏好并回传', () => {
+  it('[SPEC-SET-02] [SPEC-SET-03] [SPEC-SET-05] the first push restores music settings and keyboard preferences and reports them back', () => {
     send({ ...snapshot(), practice: practice({ keyboardCollapsed: true, keyboardMode: 'full' }) });
     expect(state.controller!.getSpeed()).toBe(70);
     expect(state.controller!.getLoopEnabled()).toBe(true);
     expect(state.controller!.getChordsMuted()).toBe(true);
-    // 无可靠声部签名：保留速度 / 循环 / 伴奏，但清除静音并提示重新检查
+    // No reliable voice signature: keep speed / loop / accompaniment, but clear mutes and ask to re-check
     expect(state.controller!.getSettings().mutedVoices).toEqual([]);
     expect(element('content-status').textContent).toContain('Voices have changed');
     expect(element<HTMLSelectElement>('keyboard-range').value).toBe('full');
     expect(element('keyboard-scroll').hidden).toBe(true);
     const report = last('practice-state');
     expect(report.ui).toEqual({ keyboardCollapsed: true, keyboardMode: 'full' });
-    // 核验后当前清单已知：记录改存本次计算的签名，静音保持清空
+    // After verification the current list is known: the record stores the signature computed this time, mutes stay cleared
     expect(report.tunes).toEqual([{ id: '1', signature: '[[null,null]]', settings: { speed: 70, loop: true, chordsMuted: true, mutedVoices: [] } }]);
   });
 
-  it('[SPEC-SET-03] [SPEC-SET-05] 设置与键盘偏好变化全量上报，未变化不重复提交', () => {
+  it('[SPEC-SET-03] [SPEC-SET-05] settings and keyboard preference changes are reported in full; unchanged state is not re-submitted', () => {
     send(snapshot());
     const initial = sent.filter((message) => message.type === 'practice-state').length;
     state.controller!.setSpeed(55);
@@ -350,7 +350,7 @@ describe('练习设置恢复与重置', () => {
     expect(last('practice-state').ui.keyboardCollapsed).toBe(true);
   });
 
-  it('[SPEC-SET-04] 恢复的声部清单不一致时只清静音，不重置其他设置', () => {
+  it('[SPEC-SET-04] a mismatched restored voice list clears only mutes without resetting other settings', () => {
     const voices = 'X:1\nV:top name="旋律"\nV:low name="伴奏"\nK:C\n[V:top] CDEF|\n[V:low] C,4|';
     send({
       ...snapshot(voices),
@@ -362,7 +362,7 @@ describe('练习设置恢复与重置', () => {
     expect(element('content-status').textContent).toContain('Voices have changed');
   });
 
-  it('[SPEC-SET-07] 重置先暂停、恢复默认并清除本文件记录，不自动起播', async () => {
+  it('[SPEC-SET-07] reset pauses first, restores defaults and clears this file\'s record without auto-playing', async () => {
     send({ ...snapshot(), practice: practice({ keyboardCollapsed: true, keyboardMode: 'full' }) });
     await playing();
     click('reset-practice');
@@ -379,13 +379,13 @@ describe('练习设置恢复与重置', () => {
     for (const tune of report.tunes) {
       expect(tune.settings).toEqual({ speed: 100, loop: false, chordsMuted: false, mutedVoices: [] });
     }
-    // 重置不触发起播：最后上报的播放状态仍为暂停
+    // Reset does not start playback: the last reported playback state is still paused
     expect(last('playback-state').state).toBe('paused');
   });
 });
 
-describe('来源状态与可靠迁移', () => {
-  it('[SPEC-LIFE-04] 迁移状态锁定播放与切曲，旧谱标注参考并提供目标入口', () => {
+describe('source status and reliable migration', () => {
+  it('[SPEC-LIFE-04] the migration status locks playback and tune switching, marks the old score as reference and offers the target entry', () => {
     send(snapshot());
     send({ type: 'source-state', viewId: 1, state: 'migrated', detail: 'moved.abc' });
     expect(element('content-status').textContent).toContain('This file was moved to moved.abc.');
@@ -395,30 +395,30 @@ describe('来源状态与可靠迁移', () => {
     expect(element('tunes').querySelector('button')!.disabled).toBe(true);
     expect(element('reveal-target').hidden).toBe(false);
     expect(element('reveal-source').hidden).toBe(true);
-    // 其他实例的状态不影响本预览
+    // The status of other instances does not affect this preview
     const before = element('content-status').textContent;
     send({ type: 'source-state', viewId: 9, state: 'available', detail: '' });
     expect(element('content-status').textContent).toBe(before);
-    // 入口只回传实例编号，由宿主决定目标面板
+    // The entry reports only the instance number; the host decides the target panel
     element<HTMLButtonElement>('reveal-target').click();
     expect(last('reveal-target').viewId).toBe(1);
   });
 
-  it('[SPEC-LIFE-06] [SPEC-LIFE-07] 来源不可用锁定交互，恢复推送后解锁并按新内容归零', () => {
+  it('[SPEC-LIFE-06] [SPEC-LIFE-07] source-unavailable locks interaction; a recovery push unlocks and resets to the new content', () => {
     send(snapshot());
     send({ type: 'source-state', viewId: 1, state: 'unavailable', detail: '/book.abc' });
     expect(element('content-status').textContent).toContain('The source file is unavailable: /book.abc.');
     expect(element<HTMLButtonElement>('play').disabled).toBe(true);
     send({ type: 'cursor', context: context(), offset: book.indexOf('CDEF') });
     expect(sent.filter((message) => message.type === 'target-ranges')).toHaveLength(0);
-    // 宿主推送文档即视为来源恢复：解锁并强制按新版本重渲染
+    // A document push from the host counts as source recovery: unlock and force a re-render of the new version
     send(snapshot(`${book}\n% resumed`, 2));
     expect(element<HTMLButtonElement>('play').disabled).toBe(false);
     expect(last('rendered').ok).toBe(true);
     expect(last('rendered').context.version).toBe(2);
   });
 
-  it('[SPEC-LIFE-03] 可靠迁移只更新身份并保留设置与位置，不重渲染', () => {
+  it('[SPEC-LIFE-03] a reliable migration updates only the identity, keeps settings and position, and does not re-render', () => {
     send(snapshot());
     state.controller!.setSpeed(70);
     state.controller!.seekToFraction(0.5);
@@ -432,7 +432,7 @@ describe('来源状态与可靠迁移', () => {
     expect(sent.filter((message) => message.type === 'rendered')).toHaveLength(renders);
   });
 
-  it('[SPEC-LIFE-06] 磁盘缺失提示不锁定播放，清除后提示消失', () => {
+  it('[SPEC-LIFE-06] the missing-on-disk notice does not lock playback and disappears once cleared', () => {
     send(snapshot());
     send({ type: 'source-state', viewId: 1, state: 'disk-missing', detail: '/book.abc' });
     expect(element('content-status').textContent).toContain('The file is missing on disk (/book.abc); showing the open editor content.');
@@ -442,28 +442,28 @@ describe('来源状态与可靠迁移', () => {
   });
 });
 
-describe('解析诊断与问题入口', () => {
+describe('parse diagnostics and the problems entry', () => {
   const warningBook = 'X:1\nT:Warn\nK:C\nw: hello\nCDEF|';
 
-  it('[SPEC-STATE-06] 告警显示摘要与可展开详情，可靠位置上报且不阻止播放', () => {
+  it('[SPEC-STATE-06] warnings show a summary with expandable details; reliable positions are reported and playback is not blocked', () => {
     send(snapshot(warningBook));
     expect(element('content-status-text').textContent).toContain('1 parse warning(s)');
     expect(element<HTMLDetailsElement>('diagnostics-details').hidden).toBe(false);
     expect(element('diagnostics-summary').textContent).toBe('Details');
     expect(element('diagnostics-list').textContent).toContain("Can't add words before the first line of music");
-    // 位置前缀与 HTML 不进入用户可见详情（不编造行号）
+    // Position prefixes and HTML do not enter the user-visible details (no invented line numbers)
     expect(element('diagnostics-list').textContent).not.toContain('Music Line:');
     const report = last('diagnostics');
     expect(report.items).toHaveLength(1);
     expect(warningBook.slice(report.items[0].start, report.items[0].end)).toBe('w');
-    // 普通告警不阻止播放；查看问题只在可靠定位时出现，只回传实例编号
+    // Ordinary warnings do not block playback; view-problems appears only with reliable positions and reports only the instance number
     expect(element<HTMLButtonElement>('play').disabled).toBe(false);
     expect(element('view-problems').hidden).toBe(false);
     click('view-problems');
     expect(sent.at(-1)).toEqual({ type: 'show-problems', viewId: 1 });
   });
 
-  it('[SPEC-STATE-06] 新版本修复后诊断与入口一并清除', () => {
+  it('[SPEC-STATE-06] once a new version fixes the warnings, diagnostics and the entry are cleared together', () => {
     send(snapshot(warningBook));
     expect(last('diagnostics').items).toHaveLength(1);
     send(snapshot('X:1\nT:Warn\nK:C\nCDEF|', 2));
@@ -473,7 +473,7 @@ describe('解析诊断与问题入口', () => {
     expect(element('content-status-text').textContent).not.toContain('parse warning');
   });
 
-  it('[SPEC-STATE-06] 只读来源页清除旧诊断并隐藏问题入口', () => {
+  it('[SPEC-STATE-06] a read-only source page clears old diagnostics and hides the problems entry', () => {
     send(snapshot(warningBook));
     expect(last('diagnostics').items).toHaveLength(1);
     send({ type: 'source-state', viewId: 1, state: 'migrated', detail: 'moved.abc' });

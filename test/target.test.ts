@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { choosePreviewTarget, isAbcTarget, type TargetCandidate } from '../src/core/target';
 
-// 绑定见 docs/spec/cmd.md（CMD-04 / 05 / 06）；标题以 [SPEC-域-序号] 前置，由 scripts/spec-check.mjs 双向校验。
+// Bindings in docs/spec/cmd.md (CMD-04 / 05 / 06); titles are prefixed with [SPEC-domain-number] and checked both ways by scripts/spec-check.mjs.
 
 function candidate(overrides: Partial<TargetCandidate>): TargetCandidate {
   return {
@@ -12,24 +12,24 @@ function candidate(overrides: Partial<TargetCandidate>): TargetCandidate {
   };
 }
 
-describe('目标解析（SPEC-CMD 域）', () => {
-  it('[SPEC-CMD-04] 明确目标优先且无效不回退，无显式目标时才用活动上下文', () => {
+describe('target resolution (SPEC-CMD domain)', () => {
+  it('[SPEC-CMD-04] an explicit target wins and an invalid one does not fall back; the active context is used only without an explicit target', () => {
     const explicit = candidate({ uri: 'file:///workspace/explicit.abc' });
     const active = candidate({ uri: 'file:///workspace/active.abc' });
 
-    // 明确目标优先
+    // Explicit target wins
     expect(choosePreviewTarget(explicit, active)?.uri).toBe(explicit.uri);
 
-    // 明确目标无效时返回 undefined，不回退到活动上下文
+    // An invalid explicit target returns undefined without falling back to the active context
     const invalid = candidate({ uri: 'file:///workspace/notes.md', languageId: 'markdown' });
     expect(choosePreviewTarget(invalid, active)).toBeUndefined();
 
-    // 无显式目标时使用调用前的活动上下文
+    // Without an explicit target the active context from before the call is used
     expect(choosePreviewTarget(undefined, active)?.uri).toBe(active.uri);
     expect(choosePreviewTarget(undefined, undefined)).toBeUndefined();
   });
 
-  it('[SPEC-CMD-04] 同名不同路径按文档标识区分', () => {
+  it('[SPEC-CMD-04] same name under different paths is distinguished by document identity', () => {
     const left = candidate({ uri: 'file:///left/song.abc' });
     const right = candidate({ uri: 'file:///right/song.abc' });
 
@@ -37,8 +37,8 @@ describe('目标解析（SPEC-CMD 域）', () => {
     expect(choosePreviewTarget(undefined, right)?.uri).toBe('file:///right/song.abc');
   });
 
-  it('[SPEC-CMD-05] 无有效目标返回 undefined，不产生回退目标', () => {
-    // 学习记录、其他语言、无编辑器：都不是目标
+  it('[SPEC-CMD-05] no valid target returns undefined and produces no fallback target', () => {
+    // Learning notes, other languages, no editor: none is a target
     expect(
       choosePreviewTarget(
         undefined,
@@ -51,15 +51,15 @@ describe('目标解析（SPEC-CMD 域）', () => {
     expect(choosePreviewTarget(undefined, undefined)).toBeUndefined();
   });
 
-  it('[SPEC-CMD-06] 未保存 ABC 新文档是有效目标', () => {
+  it('[SPEC-CMD-06] an unsaved new ABC document is a valid target', () => {
     const untitled = candidate({ uri: 'untitled:Untitled-1', languageId: 'abc', isUntitled: true });
 
     expect(isAbcTarget(untitled)).toBe(true);
     expect(choosePreviewTarget(untitled, undefined)?.uri).toBe('untitled:Untitled-1');
 
-    // 非 abc 语言的未保存文档不是目标
+    // An unsaved document in a non-abc language is not a target
     expect(isAbcTarget({ uri: 'untitled:Untitled-2', languageId: 'plaintext', isUntitled: true })).toBe(false);
-    // 扩展名判断不区分大小写
+    // The extension check is case-insensitive
     expect(isAbcTarget(candidate({ uri: 'file:///workspace/SONG.ABC', languageId: 'plaintext' }))).toBe(true);
   });
 });

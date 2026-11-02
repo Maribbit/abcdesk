@@ -4,8 +4,8 @@ import { parseHostMessage, parseWebviewMessage, sameContext } from '../src/core/
 const context = { viewId: 2, revision: 4, version: 3, selection: 1 };
 const document = { type: 'document', uri: 'untitled:1', fileName: '1', abc: 'X:1\nK:C\nCDEF|', isUntitled: true, version: 3, viewId: 2, revision: 4 };
 
-describe('双向消息白名单', () => {
-  it('[SPEC-ENV-04] 非对象、未知类型和旧协议一律拒绝', () => {
+describe('bidirectional message allowlist', () => {
+  it('[SPEC-ENV-04] non-objects, unknown types and the old protocol are all rejected', () => {
     for (const value of [null, undefined, 'ready', [], {}, { type: 'unknown' }]) {
       expect(parseWebviewMessage(value)).toBeUndefined();
       expect(parseHostMessage(value)).toBeUndefined();
@@ -16,7 +16,7 @@ describe('双向消息白名单', () => {
     expect(parseWebviewMessage({ type: 'reveal-source', viewId: 2, uri: 'ignored' })).toEqual({ type: 'reveal-source', viewId: 2 });
   });
 
-  it('[SPEC-ENV-04] 所有上下文字段必须是安全非负整数，额外字段丢弃', () => {
+  it('[SPEC-ENV-04] all context fields must be safe non-negative integers; extra fields are dropped', () => {
     const rendered = { type: 'rendered', context, ok: true, linkable: true };
     expect(parseWebviewMessage({ ...rendered, context: { ...context, uri: 'ignored' }, path: 'ignored' })).toEqual(rendered);
     for (const key of Object.keys(context)) {
@@ -32,7 +32,7 @@ describe('双向消息白名单', () => {
     expect(sameContext(undefined, context)).toBe(false);
   });
 
-  it('[SPEC-ENV-04] 停音动作按实例与请求编号校验，不强制匹配最新文档版本', () => {
+  it('[SPEC-ENV-04] the silence action is validated by instance and request number without requiring the latest document version', () => {
     for (const action of ['toggle', 'pause', 'stop']) {
       const message = { type: 'playback', viewId: 2, requestId: 5, action, ...(action === 'toggle' ? { context } : {}) };
       expect(parseHostMessage({ ...message, uri: 'ignored' })).toEqual(message);
@@ -44,7 +44,7 @@ describe('双向消息白名单', () => {
     expect(parseHostMessage({ type: 'playback', viewId: 2, requestId: 5, action: 'seek' })).toBeUndefined();
   });
 
-  it('[SPEC-ENV-04] 范围必须非空正向且安全；数组最多16项，额外路径丢弃', () => {
+  it('[SPEC-ENV-04] ranges must be non-empty, forward and safe; arrays hold at most 16 items and extra paths are dropped', () => {
     const ranges = [{ start: 1, end: 2 }];
     for (const type of ['source-highlight', 'target-ranges']) {
       expect(parseWebviewMessage({ type, context, ranges: [] })).toEqual({ type, context, ranges: [] });
@@ -59,7 +59,7 @@ describe('双向消息白名单', () => {
     expect(parseWebviewMessage({ type: 'reveal-range', requestId: 1, context, start: 1, end: 2 })).toEqual({ type: 'reveal-range', requestId: 1, context, start: 1, end: 2 });
   });
 
-  it('[SPEC-ENV-04] 联动说明仅接受登记原因，目标请求不能夹带偏移或 URI', () => {
+  it('[SPEC-ENV-04] linkage explanations accept only registered reasons; target requests cannot smuggle offsets or URIs', () => {
     for (const reason of ['no-mapping', 'no-selection', 'update-pending', 'stale-score', 'choose-tune', 'structure-unreliable']) {
       expect(parseWebviewMessage({ type: 'linkage-unavailable', context, reason })).toEqual({ type: 'linkage-unavailable', context, reason });
     }
@@ -68,7 +68,7 @@ describe('双向消息白名单', () => {
     expect(parseWebviewMessage({ type: 'context-invalidated', context })).toEqual({ type: 'context-invalidated', context });
   });
 
-  it('[SPEC-ENV-04] 文档形状完整，首次源码意图必须在快照范围内', () => {
+  it('[SPEC-ENV-04] the document shape is complete and the initial source intent must lie within the snapshot', () => {
     expect(parseHostMessage(document)).toEqual(document);
     for (const key of Object.keys(document)) expect(parseHostMessage({ ...document, [key]: undefined })).toBeUndefined();
     const initialRequest = { requestId: 1, offset: 8 };
@@ -76,7 +76,7 @@ describe('双向消息白名单', () => {
     for (const offset of [-1, document.abc.length + 1, NaN, 1.5]) expect(parseHostMessage({ ...document, initialRequest: { ...initialRequest, offset } })).toBeUndefined();
   });
 
-  it('[SPEC-ENV-04] 选曲往返核验请求与实例，嵌套和循环结构立即拒绝', () => {
+  it('[SPEC-ENV-04] tune selection round trips verify request and instance; nested and cyclic structures are rejected immediately', () => {
     const request = { type: 'select-tune', context, requestId: 3 };
     expect(parseWebviewMessage(request)).toEqual(request);
     expect(parseWebviewMessage({ ...request, requestId: undefined })).toBeUndefined();
@@ -89,7 +89,7 @@ describe('双向消息白名单', () => {
     expect(parseHostMessage(cycle)).toBeUndefined();
   });
 
-  it('[SPEC-ENV-04] 查阅可清除，显式起播必须带请求编号', () => {
+  it('[SPEC-ENV-04] inspection can be cleared; an explicit start must carry a request number', () => {
     for (const offset of [0, 12, null]) expect(parseHostMessage({ type: 'cursor', context, offset })).toEqual({ type: 'cursor', context, offset });
     for (const offset of [-1, 1.5, undefined]) expect(parseHostMessage({ type: 'cursor', context, offset })).toBeUndefined();
     const source = { type: 'play-from-cursor', context, requestId: 5, offset: 3 };
@@ -109,8 +109,8 @@ describe('双向消息白名单', () => {
   });
 });
 
-describe('解析诊断消息', () => {
-  it('[SPEC-STATE-06] 诊断只接受非空可靠区间与有限条数，查看问题只带实例编号', () => {
+describe('parse diagnostics messages', () => {
+  it('[SPEC-STATE-06] diagnostics accept only non-empty reliable ranges and a bounded count; view-problems carries only the instance number', () => {
     const item = { message: 'Unknown character ignored', start: 1, end: 2 };
     expect(parseWebviewMessage({ type: 'diagnostics', context, items: [item] }))
       .toEqual({ type: 'diagnostics', context, items: [item] });
@@ -133,8 +133,8 @@ describe('解析诊断消息', () => {
   });
 });
 
-describe('文件生命周期消息', () => {
-  it('[SPEC-LIFE-03] [SPEC-LIFE-04] 迁移标记、来源状态与目标入口形状校验', () => {
+describe('file lifecycle messages', () => {
+  it('[SPEC-LIFE-03] [SPEC-LIFE-04] migration marker, source status and target entry shapes are validated', () => {
     expect(parseHostMessage({ ...document, continued: true })).toEqual({ ...document, continued: true });
     expect(parseHostMessage({ ...document, continued: 'yes' })).toBeUndefined();
     for (const state of ['migrated', 'unavailable', 'disk-missing', 'available']) {
@@ -150,7 +150,7 @@ describe('文件生命周期消息', () => {
   });
 });
 
-describe('练习设置消息', () => {
+describe('practice settings messages', () => {
   const settings = { speed: 100, loop: false, chordsMuted: false, mutedVoices: [3, 1] };
   const practice = {
     version: 1,
@@ -158,7 +158,7 @@ describe('练习设置消息', () => {
     tunes: [{ id: '1', signature: 'v1', settings }],
   };
 
-  it('[SPEC-SET-03] [SPEC-SET-04] [SPEC-SET-08] 上报按记录整体校验并规范化', () => {
+  it('[SPEC-SET-03] [SPEC-SET-04] [SPEC-SET-08] reports are validated and normalized as a whole record', () => {
     expect(parseWebviewMessage({ type: 'practice-state', context, ...practice, ui: practice.ui, tunes: practice.tunes, path: 'ignored' }))
       .toEqual({
         type: 'practice-state',
@@ -166,7 +166,7 @@ describe('练习设置消息', () => {
         ui: practice.ui,
         tunes: [{ id: '1', signature: 'v1', settings: { ...settings, mutedVoices: [1, 3] } }],
       });
-    // 无法确认声部清单时，静音不进入持久形状
+    // When the voice list cannot be confirmed, mutes do not enter the persistent shape
     expect(parseWebviewMessage({ type: 'practice-state', context, ui: practice.ui, tunes: [{ ...practice.tunes[0], signature: null }] }))
       .toMatchObject({ tunes: [{ signature: null, settings: { mutedVoices: [] } }] });
     for (const bad of [
@@ -179,13 +179,13 @@ describe('练习设置消息', () => {
     expect(parseWebviewMessage({ type: 'practice-state', ...practice })).toBeUndefined();
   });
 
-  it('[SPEC-SET-07] 重置只携带当前上下文，不夹带路径或记录', () => {
+  it('[SPEC-SET-07] reset carries only the current context, no paths or records', () => {
     expect(parseWebviewMessage({ type: 'reset-practice', context, uri: 'ignored', tunes: [] }))
       .toEqual({ type: 'reset-practice', context });
     expect(parseWebviewMessage({ type: 'reset-practice' })).toBeUndefined();
   });
 
-  it('[SPEC-SET-02] 文档记录无效时忽略该项但不拒绝整份文档', () => {
+  it('[SPEC-SET-02] an invalid document record is ignored without rejecting the whole document', () => {
     expect(parseHostMessage({ ...document, practice })).toEqual({
       ...document,
       practice: { ...practice, tunes: [{ ...practice.tunes[0], settings: { ...settings, mutedVoices: [1, 3] } }] },

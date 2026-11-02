@@ -19,8 +19,8 @@ const record = (tunes: PracticeTuneRecord[] = [tune]): PracticeRecord => ({
   tunes,
 });
 
-describe('练习记录模型', () => {
-  it('[SPEC-SET-08] 规范化排序与去重，保留轻量设置且不写 ABC', () => {
+describe('practice record model', () => {
+  it('[SPEC-SET-08] normalizes order and duplicates, keeps lightweight settings and writes no ABC', () => {
     expect(parsePracticeRecord(record())).toEqual({
       version: PRACTICE_SCHEMA_VERSION,
       ui: { keyboardCollapsed: false, keyboardMode: 'tune' },
@@ -29,12 +29,12 @@ describe('练习记录模型', () => {
     expect(practiceStorageKey('file:///book.abc')).toBe('abcdesk.practice.v1:file:///book.abc');
   });
 
-  it('[SPEC-SET-04] 无可靠声部签名时不保留静音覆盖', () => {
+  it('[SPEC-SET-04] mute overrides are not kept without a reliable voice signature', () => {
     const parsed = parsePracticeRecord(record([{ ...tune, signature: null }]));
     expect(parsed?.tunes[0]).toMatchObject({ signature: null, settings: { mutedVoices: [], speed: 100 } });
   });
 
-  it('[SPEC-SET-08] 形状、范围或唯一性不符时整体回退，不删除记录', () => {
+  it('[SPEC-SET-08] falls back as a whole on shape, range or uniqueness mismatch without deleting the record', () => {
     const bad: unknown[] = [
       null,
       { ...record(), version: 2 },
@@ -58,7 +58,7 @@ describe('练习记录模型', () => {
     expect(parsePracticeRecord(record([{ ...tune, id: 'x'.repeat(200) }]))).toBeDefined();
   });
 
-  it('[SPEC-SET-08] 提交合并以新记录覆盖同曲、保留未提及曲目并限制总量', () => {
+  it('[SPEC-SET-08] commit merge overwrites the same tune with the new record, keeps unmentioned tunes and caps the total', () => {
     const base = record([
       { ...tune, id: 'a', settings: { ...settings, speed: 80 } },
       { ...tune, id: 'b', settings: { ...settings, speed: 90 } },

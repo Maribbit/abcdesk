@@ -61,8 +61,8 @@ beforeEach(() => {
 });
 afterEach(() => { controller.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-describe('音频归属与原子设置', () => {
-  it('[SPEC-DOC-03] 新曲一次性恢复设置与时序，不准备音频，切曲立即停止旧实例', async () => {
+describe('audio ownership and atomic settings', () => {
+  it('[SPEC-DOC-03] a new tune restores settings and timing in one step, prepares no audio, and switching stops the old instance immediately', async () => {
     controller.setTune(tune(), { speed: 70, loop: true, chordsMuted: true, mutedVoices: [0] });
     expect(state.synths).toHaveLength(0);
     expect(state.timers).toHaveLength(1);
@@ -78,7 +78,7 @@ describe('音频归属与原子设置', () => {
     expect(controller.getProgress().positionMs).toBe(0);
   });
 
-  it('[SPEC-DOC-04] 旧准备在 init 后取消则不 prime，迟到完成不开始新曲', async () => {
+  it('[SPEC-DOC-04] an old prepare cancelled after init does not prime, and its late completion does not start the new tune', async () => {
     controller.setTune(tune());
     controller.toggle();
     const old = state.synths[0];
@@ -90,7 +90,7 @@ describe('音频归属与原子设置', () => {
     expect(controller.getStatus().phase).toBe('idle');
   });
 
-  it('[SPEC-DOC-04] 旧 prime、时序与 ended 完成不得改变新曲状态或高亮', async () => {
+  it('[SPEC-DOC-04] old prime, timing and ended completions must not change the new tune state or highlighting', async () => {
     controller.setTune(tune());
     const oldTimer = state.timers[0];
     controller.toggle();
@@ -112,7 +112,7 @@ describe('音频归属与原子设置', () => {
     expect(controller.getStatus().phase).toBe('playing');
   });
 
-  it('[SPEC-DOC-04] 旧变速重建完成和回调不能恢复已切走曲目', async () => {
+  it('[SPEC-DOC-04] completion and callbacks of an old speed rebuild cannot restore a tune already switched away', async () => {
     controller.setTune(tune());
     controller.toggle();
     await ready(state.synths[0]);
@@ -131,10 +131,10 @@ describe('音频归属与原子设置', () => {
     expect(controller.getSettings().speed).toBe(100);
     expect(controller.getStatus().phase).toBe('playing');
     state.synths[2].options?.options.onEnded();
-    expect(state.synths[2].start).toHaveBeenCalledTimes(2); // 新曲循环不被旧 ended 计数吞掉
+    expect(state.synths[2].start).toHaveBeenCalledTimes(2); // The new tune's loop is not swallowed by the old ended count
   });
 
-  it('[SPEC-DOC-04] 暂停/停止/销毁立即清理尚未完成的准备，完成后仍不能起播', async () => {
+  it('[SPEC-DOC-04] pause/stop/dispose immediately clean up an unfinished prepare, and its completion still cannot start playback', async () => {
     for (const action of ['pause', 'stop', 'dispose'] as const) {
       controller.setTune(tune());
       controller.toggle();
@@ -148,7 +148,7 @@ describe('音频归属与原子设置', () => {
     }
   });
 
-  it('[SPEC-PLAY-04] 重建冻结旧计时器，超时取消旧任务后可以明确重试', async () => {
+  it('[SPEC-PLAY-04] a rebuild freezes old timers; after a timeout cancels the old task an explicit retry is possible', async () => {
     window.dispatchEvent(new Event('click'));
     controller.setTune(tune());
     controller.toggle();
@@ -172,7 +172,7 @@ describe('音频归属与原子设置', () => {
     expect(controller.getStatus().phase).toBe('playing');
   });
 
-  it('[SPEC-STATE-07] 准备期间调参不报告中间空闲，不能重入换版', () => {
+  it('[SPEC-STATE-07] adjusting while preparing reports no intermediate idle state and cannot re-enter version switching', () => {
     controller.setTune(tune());
     controller.toggle();
     const phases: string[] = [];
@@ -182,7 +182,7 @@ describe('音频归属与原子设置', () => {
     expect(controller.getStatus().phase).toBe('preparing');
   });
 
-  it('[SPEC-PLAY-02] 停止后旧计时器失效，暂停/恢复后的旧 ended 不终止新播放', async () => {
+  it('[SPEC-PLAY-02] old timers are void after stop; an old ended after pause/resume does not end the new playback', async () => {
     controller.setTune(tune());
     controller.toggle();
     const instance = state.synths[0];

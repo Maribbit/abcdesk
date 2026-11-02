@@ -6,7 +6,7 @@ export function tuneLabel(catalog: TuneCatalog, index: number): string {
   return t('tune-position').replace('{0}', String(index + 1)).replace('{1}', String(catalog.tunes.length)) + ' · ' + (tune.title || t('untitled-tune'));
 }
 
-/** SPEC-DOC-01 / 03、A11Y-04 / 05：候选移动不提交，只有显式激活才切曲。 */
+/** SPEC-DOC-01 / 03, A11Y-04 / 05: moving the candidate does not commit; only explicit activation switches the tune. */
 export class TunePicker {
   private readonly trigger = document.createElement('button');
   private readonly list = document.createElement('div');
@@ -14,7 +14,7 @@ export class TunePicker {
   private selected: number | null = null;
   private candidate = 0;
   private revision = 0;
-  /** 只读来源状态（SPEC-LIFE-04 / 06）：锁定切曲交互，旧谱仅供参考时不可切换曲目。 */
+  /** Read-only source state (SPEC-LIFE-04 / 06): locks tune switching; the stale score is reference only. */
   private locked = false;
 
   constructor(private readonly root: HTMLElement, private readonly confirm: HTMLButtonElement, private readonly choose: (index: number) => void) {
@@ -96,7 +96,7 @@ export class TunePicker {
     if (wasOpen && restoreFocus) this.trigger.focus();
   }
 
-  /** 只读来源状态锁定（SPEC-LIFE-04 / 06）：禁止打开列表与提交；恢复后解锁。 */
+  /** Read-only source lock (SPEC-LIFE-04 / 06): opening the list and committing are disabled; unlocked after recovery. */
   setLocked(locked: boolean): void {
     this.locked = locked;
     this.trigger.disabled = locked;

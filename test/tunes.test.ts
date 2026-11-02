@@ -14,8 +14,8 @@ function noteRanges(text: string): Array<{ startChar: number; endChar: number }>
     .filter((item) => item?.el_type === 'note') as Array<{ startChar: number; endChar: number }>;
 }
 
-describe('曲目目录与映射', () => {
-  it('[SPEC-DOC-01] 保留顺序、同名、缺失标题与空 X:，空白不制造曲目', () => {
+describe('tune catalog and mapping', () => {
+  it('[SPEC-DOC-01] keeps order, duplicate names, missing titles and empty X:; blanks create no tunes', () => {
     expect(createTuneCatalog(book).tunes.map(({ id, title, index }) => ({ id, title, index }))).toEqual([
       { id: '1', title: '同名', index: 0 }, { id: '2', title: '同名', index: 1 },
     ]);
@@ -24,7 +24,7 @@ describe('曲目目录与映射', () => {
     expect(createTuneCatalog('T:Solo\nK:C\nC|').tunes[0].id).toBeNull();
   });
 
-  it.each(['\n', '\r\n', '\r'])('[SPEC-DOC-06] %j 换行、BOM、中文和代理对的第二曲源码范围准确', (eol) => {
+  it.each(['\n', '\r\n', '\r'])('[SPEC-DOC-06] with %j line endings, BOM, CJK text and surrogate pairs the second tune\'s source range is exact', (eol) => {
     const source = `\uFEFF \n% 中文 \uD840\uDC00\nM:3/4\nL:1/16\n%%MIDI program 40\n${book}`.replaceAll('\n', eol);
     const catalog = createTuneCatalog(source);
     expect(catalog.issues).toEqual([]);
@@ -43,7 +43,7 @@ describe('曲目目录与映射', () => {
     expect(tuneAtSource(catalog, source.indexOf('GABc'))?.id).toBe('2');
   });
 
-  it('[SPEC-DOC-06] 局部字段覆盖公共默认且不泄漏到下一曲', () => {
+  it('[SPEC-DOC-06] local fields override the shared defaults and do not leak into the next tune', () => {
     const catalog = createTuneCatalog(`M:3/4\nL:1/16\nU:H=!fermata!\nI:staffwidth 500\n${first.replace('K:C', 'M:2/4\nL:1/8\nK:C')}\n\n${second}`);
     const tunes = catalog.tunes.map((tune) => parseOnly(tune.input.text)[0]);
     expect(tunes.map((tune) => tune.getMeterFraction())).toEqual([{ num: 2, den: 4 }, { num: 3, den: 4 }]);
@@ -51,7 +51,7 @@ describe('曲目目录与映射', () => {
     expect(durations.map((note) => note && 'duration' in note ? note.duration : null)).toEqual([0.125, 0.0625]);
   });
 
-  it('[SPEC-DOC-06] 公共文本字段与续行被局部字段整体覆盖，U/I/指令按键覆盖', () => {
+  it('[SPEC-DOC-06] shared text fields and continuation lines are overridden wholesale by local fields; U/I/directives override per key', () => {
     const source = 'C:公共作曲者\n+:公共续行\nN:公共注释\nU:H=!fermata!\nU:J=!trill!\nI:linebreak $\n%%staffwidth 500\n' +
       first.replace('K:C\nCDEF|', 'C:本曲作曲者\nN:本曲注释\nU:H=!accent!\n%%staffwidth 600\nK:C\nHCJDEF|') + '\n\n' + second;
     const catalog = createTuneCatalog(source);
@@ -70,7 +70,7 @@ describe('曲目目录与映射', () => {
     expect(catalog.tunes[0].input.text).toContain('I:linebreak $');
   });
 
-  it.each(['\n', '\r\n', '\r'])('[SPEC-DOC-06] 无 X: 的前导空白/注释不偏移实际音符 %j', (eol) => {
+  it.each(['\n', '\r\n', '\r'])('[SPEC-DOC-06] leading blanks/comments without X: do not shift the actual notes %j', (eol) => {
     const source = '\uFEFF \n% 注释\n\nK:C\nCDEF|'.replaceAll('\n', eol);
     const catalog = createTuneCatalog(source);
     expect(catalog.initialBlocked).toBe(false);
@@ -81,7 +81,7 @@ describe('曲目目录与映射', () => {
     }).join('')).toBe('CDEF');
   });
 
-  it('[SPEC-DOC-06] 未闭合/错配指令块不能静默输出部分曲目，普通说明不造曲', () => {
+  it('[SPEC-DOC-06] unclosed / mismatched directive blocks cannot silently output partial tunes; plain notes create no tune', () => {
     for (const abc of ['X:1\nK:C\nC|\n%%begintext\n说明', 'X:1\n%%begintext\n说明\n%%endps\nK:C\nC|']) {
       const catalog = createTuneCatalog(abc);
       expect(catalog.issues.length).toBeGreaterThan(0);
@@ -93,7 +93,7 @@ describe('曲目目录与映射', () => {
     expect(createTuneCatalog(source).issues.length).toBeGreaterThan(0);
   });
 
-  it('[SPEC-DOC-06] 不映射合成字符、继承头部和不连续范围', () => {
+  it('[SPEC-DOC-06] synthesized characters, inherited headers and non-contiguous ranges are not mapped', () => {
     const source = normalizeSource('M:3/4\r\nCDEF');
     const mapped = emptyMappedText();
     appendSource(mapped, source, 0, 6, false);
@@ -107,7 +107,7 @@ describe('曲目目录与映射', () => {
     expect(toSourceRange(mapped, 0, 100)).toBeUndefined();
   });
 
-  it('[SPEC-DOC-06] 前导缺 X: 音乐不自动跳过，后续明确曲目仍可选择', () => {
+  it('[SPEC-DOC-06] leading music without X: is not skipped automatically; later explicit tunes stay selectable', () => {
     const catalog = createTuneCatalog(`T:Missing\nK:C\nCDEF|\n\n${second}`);
     expect(catalog.initialBlocked).toBe(true);
     expect(catalog.issues.length).toBeGreaterThan(0);
@@ -118,7 +118,7 @@ describe('曲目目录与映射', () => {
     expect(session.select(0)).toBe(true);
   });
 
-  it('[SPEC-DOC-06] 空行后的疑似音乐不当作已渲染，也不凭标题拆曲', () => {
+  it('[SPEC-DOC-06] suspected music after a blank line is not treated as rendered, nor are tunes split by title', () => {
     const source = `${first}\n\nT:Missing\nK:C\nABcd|\n\n${second}`;
     const catalog = createTuneCatalog(source);
     expect(catalog.tunes).toHaveLength(2);
@@ -128,32 +128,32 @@ describe('曲目目录与映射', () => {
     expect(createTuneCatalog('K:C\nCDEF|\n\nK:G\nGABc|').tunes[0].reliable).toBe(false);
   });
 
-  it('[SPEC-DOC-06] 文本块内的伪 X: 不成为曲目，受影响曲目明确不可用', () => {
+  it('[SPEC-DOC-06] a fake X: inside a text block does not become a tune; the affected tune is explicitly unavailable', () => {
     const catalog = createTuneCatalog(`X:1\n%%begintext\nX:fake\n%%endtext\nK:C\nC|\n\n${second}`);
     expect(catalog.tunes.map((tune) => tune.id)).toEqual(['1', '2']);
     expect(catalog.tunes.map((tune) => tune.reliable)).toEqual([false, true]);
   });
 
-  it('[SPEC-DOC-06] 局部错误不筛掉曲目，全休止曲有真实音符条目', () => {
+  it('[SPEC-DOC-06] local errors do not filter out tunes; an all-rest tune has real note entries', () => {
     const catalog = createTuneCatalog(`X:1\nK:invalid\n???\n\nX:2\nK:C\nz4|`);
     expect(catalog.tunes).toHaveLength(2);
     expect(noteRanges(catalog.tunes[1].input.text)).toHaveLength(1);
   });
 });
 
-describe('严格身份与会话切换', () => {
-  it('[SPEC-DOC-05] 重排按唯一 X: 匹配，不按同名或旧下标', () => {
+describe('strict identity and session switching', () => {
+  it('[SPEC-DOC-05] reordering matches by unique X:, not by same name or old index', () => {
     const previous = createTuneCatalog(book);
     expect(matchTune(previous, 0, createTuneCatalog(`${second}\n\n${first}`))).toBe(1);
     expect(matchTune(previous, 0, createTuneCatalog(second))).toBeNull();
     expect(matchTune(previous, 0, createTuneCatalog(first.replace('X:1', 'X:3')))).toBeNull();
   });
 
-  it.each([first.replace('X:1\n', ''), book.replace('X:2', 'X:1')])('[SPEC-DOC-05] 缺失或重复 X: 不跨版本匹配', (abc) => {
+  it.each([first.replace('X:1\n', ''), book.replace('X:2', 'X:1')])('[SPEC-DOC-05] missing or duplicate X: does not match across versions', (abc) => {
     expect(matchTune(createTuneCatalog(abc), 0, createTuneCatalog(abc))).toBeNull();
   });
 
-  it('[SPEC-DOC-02] 新预览默认第一首，同一快照重复不重置，重开回到第一首', () => {
+  it('[SPEC-DOC-02] a new preview defaults to the first tune, repeating the same snapshot does not reset, reopening returns to the first tune', () => {
     const session = new TuneSession();
     expect(session.receive(snapshot(), false)).toBe(true);
     expect(session.selected).toBe(0);
@@ -165,7 +165,7 @@ describe('严格身份与会话切换', () => {
     expect(reopened.selected).toBe(0);
   });
 
-  it('[SPEC-DOC-04] 播放期间冻结目录，切曲先应用最新文档再匹配', () => {
+  it('[SPEC-DOC-04] the catalog is frozen during playback; switching tunes applies the latest document first, then matches', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     const request = session.beginSelection(1)!;
@@ -177,7 +177,7 @@ describe('严格身份与会话切换', () => {
     expect(session.current?.id).toBe('2');
   });
 
-  it('[SPEC-DOC-03] 重复当前选择无效果；取消或被接替的选择响应无效', () => {
+  it('[SPEC-DOC-03] repeating the current selection has no effect; cancelled or superseded selection responses are void', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     expect(session.beginSelection(0)).toBeUndefined();
@@ -189,7 +189,7 @@ describe('严格身份与会话切换', () => {
     expect(session.completeSelection(newer.id, snapshot())).toBe(true);
   });
 
-  it('[SPEC-DOC-05] 无 X: 单曲更新需要显式确认', () => {
+  it('[SPEC-DOC-05] updating a single tune without X: requires explicit confirmation', () => {
     const session = new TuneSession();
     session.receive(snapshot('K:C\nCDEF|'), false);
     session.receive(snapshot('K:C\nGABc|', 2), false);
@@ -197,7 +197,7 @@ describe('严格身份与会话切换', () => {
     expect(session.select(0)).toBe(true);
   });
 
-  it('[SPEC-SET-03] [SPEC-DOC-03] 逐曲设置不串用，同快照切回恢复设置而不包含位置', () => {
+  it('[SPEC-SET-03] [SPEC-DOC-03] per-tune settings do not cross over; switching back within the same snapshot restores settings but not position', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.remember({ speed: 70, loop: true, chordsMuted: true, mutedVoices: [0] }, 'voice');
@@ -207,7 +207,7 @@ describe('严格身份与会话切换', () => {
     expect(session.settingsFor('voice').settings.speed).toBe(70);
   });
 
-  it('[SPEC-SET-04] 声部变化只清整组静音，不清速度、循环和伴奏设置', () => {
+  it('[SPEC-SET-04] a voice change clears only the whole mute set, not speed, loop or accompaniment settings', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.remember({ speed: 70, loop: true, chordsMuted: true, mutedVoices: [0, 1] }, 'old');
@@ -218,7 +218,7 @@ describe('严格身份与会话切换', () => {
     expect(session.settingsFor('old').settings.mutedVoices).toEqual([0, 1]);
   });
 
-  it.each(['new', null])('[SPEC-SET-04] 无旧静音覆盖时声部变化或未知仍提示：%j', (signature) => {
+  it.each(['new', null])('[SPEC-SET-04] without old mute overrides a voice change or unknown signature still notifies: %j', (signature) => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.remember(defaultMusicSettings(), 'old');
@@ -230,7 +230,7 @@ describe('严格身份与会话切换', () => {
     expect(session.settingsFor(signature).voicesChanged).toBe(false);
   });
 
-  it('[SPEC-DOC-05] 暂时空白不擦记录，明确删除后编号重现不继承', () => {
+  it('[SPEC-DOC-05] a temporary blank does not erase records; a number reappearing after explicit deletion inherits nothing', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.remember({ ...defaultMusicSettings(), speed: 60 }, 'v');
@@ -244,7 +244,7 @@ describe('严格身份与会话切换', () => {
     expect(session.settingsFor('v').settings.speed).toBe(100);
   });
 
-  it('[SPEC-LIFE-03] 可靠迁移只更新身份标识，快照、暂停版本与设置记录沿用', () => {
+  it('[SPEC-LIFE-03] a reliable migration updates only the identity; snapshot, paused version and settings records carry over', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.remember({ ...defaultMusicSettings(), speed: 60 }, 'v');
@@ -252,13 +252,13 @@ describe('严格身份与会话切换', () => {
     session.rekey('file:///moved.abc');
     expect(session.snapshot?.uri).toBe('file:///moved.abc');
     expect(session.pending?.uri).toBe('file:///moved.abc');
-    // 迁移后的新版本仍视为同一文档：设置记录沿用而不是清空
+    // The new version after migration is still the same document: settings records carry over instead of being cleared
     session.receive({ uri: 'file:///moved.abc', version: 2, abc: book + '\n% pending' }, false);
     expect(session.current?.id).toBe('1');
     expect(session.settingsFor('v').settings.speed).toBe(60);
   });
 
-  it('[SPEC-SET-02] [SPEC-SET-03] 按真实 X: 恢复曲目设置，未匹配记录不应用', () => {
+  it('[SPEC-SET-02] [SPEC-SET-03] tune settings are restored by real X:; unmatched records are not applied', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.restore([
@@ -271,14 +271,14 @@ describe('严格身份与会话切换', () => {
       settings: { speed: 60, loop: true, chordsMuted: false, mutedVoices: [1] },
       voicesChanged: false,
     });
-    // 恢复的记录同样要核验有序声部清单：不一致时只清静音并提示
+    // Restored records are also checked against the ordered voice list: on mismatch only mutes are cleared with a notice
     expect(session.settingsFor('changed')).toEqual({
       settings: { speed: 60, loop: true, chordsMuted: false, mutedVoices: [] },
       voicesChanged: true,
     });
   });
 
-  it('[SPEC-SET-04] 恢复时声部签名无法确认则清除静音并提示', () => {
+  it('[SPEC-SET-04] when the voice signature cannot be confirmed on restore, mutes are cleared with a notice', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.restore([{ id: '1', signature: null, settings: { speed: 80, loop: false, chordsMuted: true, mutedVoices: [] } }]);
@@ -288,7 +288,7 @@ describe('严格身份与会话切换', () => {
     });
   });
 
-  it('[SPEC-SET-08] 导出只含真实 X: 与轻量设置，重置清空全部曲目记录', () => {
+  it('[SPEC-SET-08] export contains only real X: and lightweight settings; reset clears every tune record', () => {
     const session = new TuneSession();
     session.receive(snapshot(), false);
     session.remember({ speed: 60, loop: true, chordsMuted: false, mutedVoices: [2, 0] }, 'v1');
@@ -297,7 +297,7 @@ describe('严格身份与会话切换', () => {
     const exported = session.exportRecords();
     expect(exported.map((entry) => entry.id)).toEqual(['1', '2']);
     expect(exported[0]).toMatchObject({ signature: 'v1', settings: { speed: 60, mutedVoices: [0, 2] } });
-    // 无可靠签名时不留静音，避免下次恢复误套用
+    // No mutes are kept without a reliable signature, so the next restore does not misapply them
     expect(exported[1]).toMatchObject({ signature: null, settings: { mutedVoices: [] } });
     session.clearRecords();
     expect(session.exportRecords()).toEqual([]);

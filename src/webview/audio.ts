@@ -20,65 +20,65 @@ import {
 } from './playback';
 
 /**
- * 播放引擎（SPEC-PLAY-01 / 02 / 03 / 04 / 05 / 06 / 11 / 12 / 14、SPEC-STATE-04 / 07、SPEC-PERF-06 / 08、SPEC-ENV-07）：
- * - 先渲染谱面，首次明确播放才准备音频；准备成功后直接执行这次仍有效的请求，无需再点一次；
- * - 准备期间再次播放 / 暂停（含隐藏与预览接替触发的暂停）取消起播，晚到完成一律不得发声；
- * - 停止立即停音并回到开头；暂停保留位置；循环开启时自然结束回到开头继续、不触发换版（SPEC-PLAY-03）；
- *   已准备资源可复用（本类合成器 + abcjs 内部音色缓存）；
- * - 内容更新的缓存与统一应用时机由 main 协调（SPEC-STATE-07）；本类经 setTune 采用新曲目并归零；
- * - 演奏时序（TimingCallbacks）与音频同源同时启动：事件回调供 main 更新播放高亮，
- *   setProgress + seek 成对完成定位（SPEC-PLAY-11 / 12；官方 SynthController 同款同步方式）；
- * - 浏览器要求用户与预览交互后才能恢复音频设备：未交互时提示"点击预览开始播放"、
- *   不因等待报超时，首次交互后自动继续仍然有效的起播（SPEC-PLAY-14）；
- * - 首版仅钢琴音色：经播放视图把展开产物的乐器指令统一为钢琴（展开产物同时决定音色样本请求与
- *   实际放置；原曲目对象保持材料指令供导出，SPEC-ENV-07 / EXP-05），音序映射再由
- *   sequenceCallback 收口，绝不触发 abcjs 默认远程音色地址。
+ * Playback engine (SPEC-PLAY-01 / 02 / 03 / 04 / 05 / 06 / 11 / 12 / 14, SPEC-STATE-04 / 07, SPEC-PERF-06 / 08, SPEC-ENV-07):
+ * - render the score first and prepare audio only on the first explicit play; once prepared, the still-valid request runs directly without a second click;
+ * - play / pause again during preparation (including pauses triggered by hiding or preview takeover) cancels the start; a late completion must never sound;
+ * - stop silences immediately and returns to the beginning; pause keeps the position; with loop on, a natural end wraps and continues without a version switch (SPEC-PLAY-03);
+ *   prepared resources are reusable (this class's synth + the abcjs internal soundfont cache);
+ * - caching of content updates and the unified apply moment are coordinated by main (SPEC-STATE-07); this class adopts the new tune via setTune and resets to zero;
+ * - performance timing (TimingCallbacks) and audio start together from the same source: event callbacks let main update playback highlighting,
+ *   setProgress + seek complete positioning as a pair (SPEC-PLAY-11 / 12; same synchronization as the official SynthController);
+ * - browsers require user interaction with the preview before the audio device can resume: before interaction show "click the preview to start playback",
+ *   never time out while waiting, and after the first interaction continue the still-valid start automatically (SPEC-PLAY-14);
+ * - first version is piano only: the playback view unifies the expansion's instrument instructions to piano (the expansion decides both the soundfont requests and
+ *   the actual placement; the original tune object keeps the material's instructions for export, SPEC-ENV-07 / EXP-05), and the sequence mapping is
+ *   finalized by sequenceCallback, never hitting the abcjs default remote soundfont URL.
  *
- * 速度与静音（SPEC-PLAY-02 / 04 / 06）：
- * - 速度百分比为主控：时序按 warpedQpm 重建（事件毫秒数随速度缩放）、音频经顶层
- *   millisecondsPerMeasure 重建，基准取曲目无参自然速度（与 abcjs 官方 go() 同款，修复
- *   无 Q: 复合拍的音频 / 时序基准分歧）；位置一律按乐曲比例（含反复的实际演奏顺序）保持；
- * - 声部静音经 voicesOff / chordsOff 参数重建生效，只作用于发声轨，不改谱面与键盘提示；
- * - 参数重建不改相位：播放中完成后继续当前快照（状态区提示"正在应用速度"）、
- *   暂停 / 空闲静默重建（由用户手动播放）；期间出现暂停、停止、隐藏、关闭或播放接替时取消续播；
- * - abcjs 的程序化停源（seek / 重建 / 停止 / 暂停）与自然结束共用 onEnded 回调：
- *   重建与播放中 seek 经 pendingEndedIgnores 计数排除，其余由相位守卫兜底；
- *   自然结束后 abcjs 不清 isRunning（僵尸运行态），由本类主动 stop 清理。
+ * Speed and mutes (SPEC-PLAY-02 / 04 / 06):
+ * - the speed percentage is the master control: timing is rebuilt via warpedQpm (event milliseconds scale with speed) and audio via the top-level
+ *   millisecondsPerMeasure, both based on the tune's natural tempo without parameters (same as the official abcjs go(), fixing the
+ *   audio / timing baseline divergence for compound meters without Q:); the position is always kept as a tune fraction (actual performance order including repeats);
+ * - voice mutes take effect through a rebuild with voicesOff / chordsOff and affect only sounding tracks, not the score or keyboard hints;
+ * - a parameter rebuild does not change the phase: during playback it continues the current snapshot after completion (status shows "applying speed"),
+ *   when paused / idle it rebuilds silently (the user plays manually); pause, stop, hide, close or playback takeover during the rebuild cancels the resume;
+ * - abcjs programmatic source stops (seek / rebuild / stop / pause) share the onEnded callback with the natural end:
+ *   rebuilds and in-playback seeks are excluded via the pendingEndedIgnores counter, the rest is guarded by the phase;
+ *   after a natural end abcjs does not clear isRunning (zombie running state), so this class stops it explicitly.
  *
- * 仅 webview 内使用（浏览器环境）；宿主通信由 main.ts 经消息桥完成（见 docs/conventions.md）。
+ * Used only inside the webview (browser environment); host communication goes through main.ts over the message bridge (see docs/conventions.md).
  */
 
 export type PlaybackPhase = 'idle' | 'preparing' | 'playing' | 'paused';
 
-/** 当前相位与状态区文案键（文案在 l10n.ts，由 main 渲染）。 */
+/** Current phase and status-area string key (strings live in l10n.ts and are rendered by main). */
 export interface PlaybackStatus {
   phase: PlaybackPhase;
   statusKey: string | null;
 }
 
-/** 准备阶段时间上限：超时终止本次请求，晚到完成不得发声；等待用户交互期间不计时（SPEC-PERF-06 / PLAY-14；阈值待 SPEC-PERF-10 实测校准）。 */
+/** Upper bound of the preparation phase: on timeout the request is terminated and a late completion must not sound; the clock does not run while waiting for user interaction (SPEC-PERF-06 / PLAY-14; threshold to be calibrated by SPEC-PERF-10). */
 const PREPARE_TIMEOUT_MS = 30_000;
 
 /**
- * 首次交互后的恢复窗口（SPEC-PLAY-14）：进入缓冲生成的旧任务可能挂在音频恢复上，
- * 先给它一个自行恢复的窗口，仍未完成则重启准备（音色缓存命中，代价小）。
+ * Recovery window after the first interaction (SPEC-PLAY-14): an old task that entered buffer generation may be stuck on audio resume,
+ * so give it a window to recover on its own; if still unfinished, restart preparation (soundfont cache hit, cheap).
  */
 const GESTURE_RECOVERY_MS = 300;
 
-/** 首版仅钢琴音色（SPEC-ENV-07）。 */
+/** First version is piano only (SPEC-ENV-07). */
 const PIANO_INSTRUMENT = 'acoustic_grand_piano';
 
-/** 一次音频准备任务；primeStarted 表示已进入缓冲生成（此后可能等待音频恢复，SPEC-PLAY-14）。 */
+/** One audio preparation task; primeStarted means buffer generation has begun (it may wait on audio resume from here on, SPEC-PLAY-14). */
 interface PrepareTask {
   primeStarted: boolean;
 }
 
-/** 参数（速度 / 静音）重建的进行中状态（SPEC-PLAY-02 / 04 / 06）：完成后按记录的乐曲比例恢复。 */
+/** In-progress state of a parameter (speed / mute) rebuild (SPEC-PLAY-02 / 04 / 06): the recorded tune fraction is restored on completion. */
 interface RebuildState {
   generation: number;
-  /** 目标位置：乐曲比例（含反复的实际演奏顺序），重建期间经定位请求更新。 */
+  /** Target position: tune fraction (actual performance order including repeats), updated by seek requests during the rebuild. */
   fraction: number;
-  /** 完成后是否续播（播放中发起为真；期间暂停、隐藏或停止则取消）。 */
+  /** Whether to resume after completion (true when started during playback; cancelled by pause, hide or stop in the meantime). */
   resume: boolean;
 }
 
@@ -86,54 +86,54 @@ export class PlaybackController {
   private readonly soundfontUrl: string | undefined;
   private readonly onChange: () => void;
   private readonly onTimeline: (event: NoteTimingEvent | null) => void;
-  /** 时序重建后的通知（SPEC-PLAY-04）：main 据此重取 getTimings（事件毫秒数随速度变化）。 */
+  /** Notification after a timing rebuild (SPEC-PLAY-04): main re-fetches getTimings (event milliseconds change with speed). */
   private readonly onTimingsChanged: () => void;
   private readonly synthOptions: SynthOptions;
   private synthInstance: MidiBuffer | undefined;
-  /** 尚未安装的 init/prime 实例也纳入取消清理，不只丢弃 Promise 结果。 */
+  /** Not-yet-installed init/prime instances are also cleaned up on cancel, not just the Promise results dropped. */
   private preparingInstance: MidiBuffer | undefined;
   private tune: TuneObject | undefined;
   private phase: PlaybackPhase = 'idle';
   private statusKey: string | null = null;
-  /** 当前曲目的演奏时序（SPEC-PLAY-11 / 12）：播放高亮与定位映射共同依据；换版与变速时重建。 */
+  /** Performance timing of the current tune (SPEC-PLAY-11 / 12): shared basis for playback highlighting and seek mapping; rebuilt on version switch and speed change. */
   private timer: TimingCallbacks | undefined;
-  /** 待提交的起播定位（乐曲比例，SPEC-PLAY-12）：准备完成后从该位置起播；取消 / 停止 / 消费后丢弃。 */
+  /** Pending start position (tune fraction, SPEC-PLAY-12): playback starts there once prepared; dropped on cancel / stop / consumption. */
   private pendingStartFraction: number | undefined;
-  /** 当前曲目的音频缓冲已生成完毕，可直接 start()（"已准备资源可复用"，SPEC-PLAY-01）。 */
+  /** The current tune's audio buffers are fully generated and start() can be called directly ("prepared resources are reusable", SPEC-PLAY-01). */
   private prepared = false;
-  /** 任务代次：取消 / 接替 / 换版 / 超时后递增，晚到的准备完成按此丢弃（SPEC-PLAY-01）。 */
+  /** Task generation: incremented on cancel / takeover / version switch / timeout; late preparation completions are dropped by it (SPEC-PLAY-01). */
   private taskGeneration = 0;
-  /** 曲目与计时器的生命周期独立于可复用音频的准备请求。 */
+  /** Tune and timer lifecycles are independent of the reusable audio preparation request. */
   private tuneGeneration = 0;
   private timerGeneration = 0;
   private prepareTimer: number | undefined;
-  /** 自管音频设备：浏览器要求用户交互后才能恢复（SPEC-PLAY-14），统一创建并经 init 传给 abcjs。 */
+  /** Self-managed audio device: browsers require user interaction before resume (SPEC-PLAY-14); created once and passed to abcjs via init. */
   private audioContext: AudioContext | undefined;
-  /** 预览内是否已发生过用户交互（平台音频恢复的前提，SPEC-PLAY-14）。 */
+  /** Whether a user interaction has happened inside the preview (precondition for platform audio resume, SPEC-PLAY-14). */
   private hasUserGesture = false;
-  /** 当前准备任务：首次交互到达时据此判断旧任务是否已进入缓冲阶段。 */
+  /** Current preparation task: used on first interaction to decide whether the old task already entered the buffering stage. */
   private currentTask: PrepareTask | undefined;
-  /** 首次交互后的恢复窗口计时器；首次交互监听在触发后移除。 */
+  /** Recovery window timer after the first interaction; the first-interaction listener is removed once fired. */
   private gestureRecoveryTimer: number | undefined;
   private gestureUnlock: (() => void) | undefined;
-  /** 速度百分比（SPEC-PLAY-04）：默认 100%，主控时序与音频的重建。 */
+  /** Speed percentage (SPEC-PLAY-04): default 100%, master control for timing and audio rebuilds. */
   private speed = SPEED_DEFAULT;
-  /** 循环开关（SPEC-PLAY-03）：默认关闭；停止保留，切曲 / 换版由会话层核验身份后恢复。 */
+  /** Loop toggle (SPEC-PLAY-03): default off; kept on stop, restored on tune switch / version switch after the session layer verifies identity. */
   private loopEnabled = false;
-  /** 静音声部索引集合（SPEC-PLAY-06）：仅接收会话层按完整声部签名核验后的覆盖。 */
+  /** Set of muted voice indexes (SPEC-PLAY-06): only accepts overrides verified by the session layer against the full voice signature. */
   private readonly mutedVoices = new Set<number>();
-  /** 自动和弦伴奏是否静音（SPEC-PLAY-06）：与显式 ABC 伴奏声部相互独立。 */
+  /** Whether the automatic chord accompaniment is muted (SPEC-PLAY-06): independent of explicit ABC accompaniment voices. */
   private chordsMuted = false;
-  /** 当前曲目的实际声部清单（SPEC-PLAY-06）：随换版重建。 */
+  /** Actual voice list of the current tune (SPEC-PLAY-06): rebuilt on version switch. */
   private voiceEntries: VoiceEntry[] = [];
-  /** 是否含自动和弦伴奏（SPEC-PLAY-06 / 10）：用无静音参数的展开产物检测，不受当前静音状态影响。 */
+  /** Whether an automatic chord accompaniment exists (SPEC-PLAY-06 / 10): detected on the expansion without mute parameters, unaffected by the current mute state. */
   private chordTrackPresent = false;
-  /** 进行中的参数重建；重建期间相位不变、由本状态记录目标位置与续播意图。 */
+  /** In-progress parameter rebuild; the phase stays unchanged during the rebuild and this state records target position and resume intent. */
   private rebuild: RebuildState | undefined;
   /**
-   * 待忽略的自然结束事件计数：abcjs 的程序化停源（重建 / 播放中 seek）同样触发 onEnded，
-   * 这些事件先在此计数掉、不算自然结束；停止 / 暂停触发的 ended 由相位守卫兜底。
-   * 只对"有效的运行中停源"加一（僵尸运行态的 stop 不再派发事件，加了会永久卡死计数）。
+   * Count of natural-end events to ignore: abcjs programmatic source stops (rebuild / in-playback seek) also fire onEnded,
+   * so those are counted off here and not treated as natural ends; ended events from stop / pause are guarded by the phase.
+   * Increment only for a "valid running source stop" (stop in the zombie running state no longer dispatches, and counting it would jam the counter forever).
    */
   private pendingEndedIgnores = 0;
 
@@ -158,37 +158,37 @@ export class PlaybackController {
     return { phase: this.phase, statusKey: this.statusKey };
   }
 
-  /** 当前曲目的演奏时序事件（供 main 构建字符↔音符映射，SPEC-PLAY-11 / 12）；无渲染曲目时为空。 */
+  /** Performance timing events of the current tune (for main to build the char<->note mapping, SPEC-PLAY-11 / 12); empty without a rendered tune. */
   getTimings(): NoteTimingEvent[] {
     return this.timer?.noteTimings ?? [];
   }
 
-  /** 当前速度百分比（SPEC-PLAY-04）。 */
+  /** Current speed percentage (SPEC-PLAY-04). */
   getSpeed(): number {
     return this.speed;
   }
 
-  /** 循环开关状态（SPEC-PLAY-03）。 */
+  /** Loop toggle state (SPEC-PLAY-03). */
   getLoopEnabled(): boolean {
     return this.loopEnabled;
   }
 
-  /** 当前曲目的声部清单与静音状态（SPEC-PLAY-06）：清单随曲目重建，静音仅按已核验的逐曲设置恢复。 */
+  /** Voice list and mute state of the current tune (SPEC-PLAY-06): the list is rebuilt per tune; mutes are restored only from verified per-tune settings. */
   getVoices(): Array<VoiceEntry & { muted: boolean }> {
     return this.voiceEntries.map((entry) => ({ ...entry, muted: this.mutedVoices.has(entry.index) }));
   }
 
-  /** 是否含自动和弦伴奏（SPEC-PLAY-06）：决定声部菜单是否提供和弦开关。 */
+  /** Whether an automatic chord accompaniment exists (SPEC-PLAY-06): decides whether the voice menu offers the chord toggle. */
   hasChordAccompaniment(): boolean {
     return this.chordTrackPresent;
   }
 
-  /** 自动和弦伴奏当前是否静音（SPEC-PLAY-06）：声部菜单的勾选状态依据。 */
+  /** Whether the automatic chord accompaniment is currently muted (SPEC-PLAY-06): basis of the voice menu's checkbox state. */
   getChordsMuted(): boolean {
     return this.chordsMuted;
   }
 
-  /** 带拍换算提示（SPEC-PLAY-04）：无法可靠换算时为 null（界面不显示猜测值）。 */
+  /** Beat hint (SPEC-PLAY-04): null when it cannot be converted reliably (the UI shows no guessed value). */
   getBeatHint(): number | null {
     const tune = this.tune;
     if (tune === undefined) {
@@ -197,15 +197,15 @@ export class PlaybackController {
     return beatHintFor(tune, this.speed);
   }
 
-  /** 进度（SPEC-PLAY-05）：位置与总长为当前速度下（含反复）的实际演奏毫秒。 */
+  /** Progress (SPEC-PLAY-05): position and total are actual performance milliseconds at the current speed (including repeats). */
   getProgress(): { positionMs: number; totalMs: number } {
     const totalMs = this.totalMs();
     return { positionMs: Math.round(totalMs * this.currentFraction()), totalMs };
   }
 
   /**
-   * 调整速度（SPEC-PLAY-04）：百分比主控、只调整试听；重建时序与音频并保持乐曲位置（含反复），
-   * 播放中允许短暂缓冲后继续，暂停时重建不发声。
+   * Adjust speed (SPEC-PLAY-04): percentage is the master control and only affects audition; rebuilds timing and audio while keeping the tune position (including repeats),
+   * during playback a short buffering pause is allowed before continuing; when paused the rebuild is silent.
    */
   setSpeed(percent: number): void {
     const next = clampSpeed(percent);
@@ -215,7 +215,7 @@ export class PlaybackController {
     this.speed = next;
     const tune = this.tune;
     if (tune !== undefined && this.synthInstance === undefined && this.rebuild === undefined) {
-      // 未准备音频时只重建时序；已有音频由 startRebuild 统一冻结并重建一次。
+      // Without prepared audio only the timing is rebuilt; existing audio is frozen and rebuilt once by startRebuild.
       const fraction = this.currentFraction();
       this.buildTimer(tune, fraction);
       this.onTimingsChanged();
@@ -224,7 +224,7 @@ export class PlaybackController {
     this.onChange();
   }
 
-  /** 切换循环（SPEC-PLAY-03）：只改行为、不启动播放、不修改 ABC；播放中切换对本次自然结束边界即时生效。 */
+  /** Toggle loop (SPEC-PLAY-03): changes behavior only, never starts playback or modifies ABC; toggling during playback applies to this natural-end boundary immediately. */
   setLoopEnabled(enabled: boolean): void {
     if (this.loopEnabled === enabled) {
       return;
@@ -233,7 +233,7 @@ export class PlaybackController {
     this.onChange();
   }
 
-  /** 静音 / 恢复单个声部（SPEC-PLAY-06）：经重建生效、不自动续播；只作用于发声轨，不改谱面与提示。 */
+  /** Mute / unmute a single voice (SPEC-PLAY-06): takes effect through a rebuild, never auto-resumes; affects only sounding tracks, not the score or hints. */
   setVoiceMuted(index: number, muted: boolean): void {
     if (!Number.isInteger(index) || index < 0) {
       return;
@@ -250,7 +250,7 @@ export class PlaybackController {
     this.onChange();
   }
 
-  /** 静音 / 恢复自动和弦伴奏（SPEC-PLAY-06）：与显式 ABC 伴奏声部相互独立。 */
+  /** Mute / unmute the automatic chord accompaniment (SPEC-PLAY-06): independent of explicit ABC accompaniment voices. */
   setChordsMuted(muted: boolean): void {
     if (this.chordsMuted === muted) {
       return;
@@ -260,14 +260,14 @@ export class PlaybackController {
     this.onChange();
   }
 
-  /** 采用渲染后的曲目（应用时机的换版，SPEC-STATE-07）；尚未渲染出曲目（undefined）时清空，不残留已失效版本。 */
+  /** Adopt the rendered tune (version switch at the apply moment, SPEC-STATE-07); when no tune has been rendered yet (undefined), clear so no stale version remains. */
   setTune(tune: TuneObject | undefined, settings?: MusicSettings): void {
     if (tune === this.tune && settings === undefined) return;
     this.invalidateTask();
     this.tuneGeneration += 1;
     this.timerGeneration += 1;
     const old = this.synthInstance;
-    this.synthInstance = undefined; // 先撤归属，stop 同步或异步发出的 ended 都不能影响新曲
+    this.synthInstance = undefined; // Drop ownership first so an ended fired by stop, sync or async, cannot affect the new tune
     this.phase = 'idle';
     this.pendingEndedIgnores = 0;
     try { old?.stop(); } catch (error) { console.error('ABC Desk: stop on tune change failed', error); }
@@ -288,8 +288,8 @@ export class PlaybackController {
   }
 
   /**
-   * 从指定毫秒起播（"从此处播放"，SPEC-PLAY-12）：与普通播放共用准备、取消与接替规则；
-   * 播放中执行时为内部定位后继续（SPEC-PLAY-02），不算用户暂停、不重新准备。
+   * Start from a given millisecond ("play from here", SPEC-PLAY-12): shares preparation, cancel and takeover rules with normal play;
+   * during playback it is an internal seek followed by continuing (SPEC-PLAY-02), not a user pause and no re-preparation.
    */
   playFromMs(milliseconds: number): void {
     if (this.tune === undefined) {
@@ -299,8 +299,8 @@ export class PlaybackController {
   }
 
   /**
-   * 定位到乐曲比例（SPEC-PLAY-05）：播放中执行一次定位并继续（拖动预览由界面层负责）；
-   * 暂停 / 空闲时只改变下次起点，不发声、不重新起播。
+   * Seek to a tune fraction (SPEC-PLAY-05): during playback perform one seek and continue (the drag preview is handled by the UI layer);
+   * when paused / idle only the next start point changes - no sound, no restart.
    */
   seekToFraction(fraction: number): void {
     if (this.tune === undefined) {
@@ -308,22 +308,22 @@ export class PlaybackController {
     }
     const clamped = Math.min(1, Math.max(0, fraction));
     if (this.rebuild !== undefined) {
-      // 重建进行中：记入目标，完成后落在该处（不打断重建）
+      // Rebuild in progress: record the target; completion lands there (the rebuild is not interrupted)
       this.rebuild.fraction = clamped;
       return;
     }
     const instance = this.synthInstance;
     if (this.phase === 'playing' && instance !== undefined) {
       if (instance.getIsRunning()) {
-        // 播放中 seek 会先程序化停源（触发一次 ended），该事件不算自然结束
+        // An in-playback seek first stops the source programmatically (one ended); that event is not a natural end
         this.pendingEndedIgnores += 1;
       }
       instance.seek(clamped, 'percent');
       this.timer?.setProgress(clamped, 'percent');
       return;
     }
-    // 暂停 / 空闲：只改变下次起点；僵尸运行态（自然结束后 abcjs 不清 isRunning）先停，
-    // 否则 seek 内部会经 _kickOffSound 直接起播（点击进度条不得因此重新起播）
+    // Paused / idle: only change the next start point; stop a zombie running state first (abcjs does not clear isRunning after a natural end),
+    // otherwise seek would start playback internally via _kickOffSound (clicking the progress bar must not restart playback)
     if (instance !== undefined) {
       if (instance.getIsRunning()) {
         try {
@@ -338,7 +338,7 @@ export class PlaybackController {
     this.timer?.setProgress(clamped, 'percent');
   }
 
-  /** 播放 / 暂停切换（按钮、命令与预览局部空格共用操作规则，SPEC-CMD-11）。 */
+  /** Play / pause toggle (shared operation rule for the button, the command and the preview-local space key, SPEC-CMD-11). */
   toggle(): void {
     switch (this.phase) {
       case 'preparing':
@@ -356,7 +356,7 @@ export class PlaybackController {
     }
   }
 
-  /** 暂停用于隐藏与预览接替（SPEC-PLAY-02）；准备中视为取消起播（SPEC-PLAY-01）。 */
+  /** Pause used by hiding and preview takeover (SPEC-PLAY-02); during preparation it counts as cancelling the start (SPEC-PLAY-01). */
   pause(): void {
     if (this.phase === 'preparing') {
       this.cancelPrepare();
@@ -367,17 +367,17 @@ export class PlaybackController {
     }
   }
 
-  /** 停止：取消起播与在建参数重建、立即停音、回到开头（SPEC-PLAY-03 / CMD-10）。 */
+  /** Stop: cancel the start and any in-flight parameter rebuild, silence immediately, return to the beginning (SPEC-PLAY-03 / CMD-10). */
   stop(): void {
     this.invalidateTask();
     this.rebuild = undefined;
     this.pendingStartFraction = undefined;
     const instance = this.synthInstance;
     if (this.phase === 'playing' && instance?.getIsRunning()) this.pendingEndedIgnores += 1;
-    this.phase = 'idle'; // 先改相位：随后触发的 ended 事件不算自然结束
+    this.phase = 'idle'; // Change the phase first: the ended event fired afterwards is not a natural end
     if (instance !== undefined) {
       try {
-        instance.stop(); // 立即停音；abcjs 内部清掉暂停位置，下次从开头开始
+        instance.stop(); // Silence immediately; abcjs clears its paused position internally, next start is from the beginning
       } catch (error) {
         console.error('ABC Desk: stop failed', error);
       }
@@ -387,11 +387,11 @@ export class PlaybackController {
       this.onTimingsChanged();
     } else this.timer?.stop();
     this.statusKey = null;
-    this.onTimeline(null); // 停止清除播放高亮（SPEC-PLAY-11）
+    this.onTimeline(null); // Stop clears playback highlighting (SPEC-PLAY-11)
     this.onChange();
   }
 
-  /** webview 关闭时立即停音（面板销毁前的保险；保留上下文时隐藏不会触发此处）。 */
+  /** Silence immediately when the webview closes (safety net before the panel is disposed; hiding with retained context does not reach here). */
   dispose(): void {
     this.removeGestureUnlock();
     this.tuneGeneration += 1;
@@ -418,23 +418,23 @@ export class PlaybackController {
       return;
     }
     if (this.rebuild !== undefined) {
-      // 重建进行中：排队续播（完成后从记录位置开始）
+      // Rebuild in progress: queue the resume (starts from the recorded position after completion)
       this.rebuild.resume = true;
       this.phase = 'playing';
       this.onChange();
       return;
     }
     if (this.prepared && this.synthInstance !== undefined) {
-      this.startSound(); // 已准备资源可复用，直接起播（待提交的起点由 startSound 消费）
+      this.startSound(); // Prepared resources are reusable, start directly (the pending start point is consumed by startSound)
       return;
     }
     this.beginPrepare();
   }
 
-  /** 从乐曲比例起播（SPEC-PLAY-12 / 05）：定位统一按比例记录（含反复的实际演奏顺序）。 */
+  /** Start from a tune fraction (SPEC-PLAY-12 / 05): positions are always recorded as fractions (actual performance order including repeats). */
   private playFromFraction(fraction: number): void {
     if (this.rebuild !== undefined) {
-      // 重建进行中：并入当前重建目标并排队续播
+      // Rebuild in progress: merge into the current rebuild target and queue the resume
       this.rebuild.fraction = fraction;
       this.rebuild.resume = true;
       this.phase = 'playing';
@@ -452,7 +452,7 @@ export class PlaybackController {
         }
         break;
       case 'preparing':
-        // 新的显式定位请求接替仍在准备的请求：旧目标不提交（SPEC-PLAY-01）
+        // A new explicit seek request takes over the one still preparing: the old target is not committed (SPEC-PLAY-01)
         this.cancelPrepare();
         this.pendingStartFraction = fraction;
         this.beginPrepare();
@@ -464,12 +464,12 @@ export class PlaybackController {
   }
 
   /**
-   * 开始播放（SPEC-PLAY-01 / 02 / 04）：可选从乐曲比例起播，缺省时消费待提交的起点；
-   * 播放中 seek 由音频层内部停源并重启，不得再调 start()（M0 实测：会双重发声）。
+   * Start playback (SPEC-PLAY-01 / 02 / 04): optionally from a tune fraction, otherwise consume the pending start point;
+   * an in-playback seek is stopped and restarted internally by the audio layer and must not call start() again (M0 measurement: it double-sounds).
    */
   private startSound(fraction?: number): void {
     if (this.rebuild !== undefined) {
-      // 重建进行中（如暂停态重建后用户恢复播放）：排队在重建完成后续播
+      // Rebuild in progress (e.g. the user resumes after a rebuild while paused): queue the resume after the rebuild completes
       this.rebuild.resume = true;
       this.phase = 'playing';
       this.onChange();
@@ -486,7 +486,7 @@ export class PlaybackController {
       const wasRunning = instance.getIsRunning();
       instance.seek(target, 'percent');
       if (!wasRunning) {
-        // 非运行状态：seek 只记录位置，需显式开始
+        // Not running: seek only records the position; an explicit start is required
         instance.start();
       }
     } else {
@@ -497,7 +497,7 @@ export class PlaybackController {
     this.onChange();
   }
 
-  /** 同步演奏时序（SPEC-PLAY-11）：先按定位目标校正进度，再启动；与音频同源同时。 */
+  /** Synchronize the performance timing (SPEC-PLAY-11): correct progress to the seek target first, then start; same source and time as the audio. */
   private syncTimer(startFraction: number | undefined): void {
     const timer = this.timer;
     if (timer === undefined) {
@@ -511,7 +511,7 @@ export class PlaybackController {
 
   private pauseInternal(): void {
     if (this.rebuild !== undefined) {
-      // 重建进行中：取消续播意图并转为暂停（完成时停在记录位置，SPEC-PLAY-02）
+      // Rebuild in progress: cancel the resume intent and switch to paused (completion stops at the recorded position, SPEC-PLAY-02)
       this.rebuild.resume = false;
       this.phase = 'paused';
       this.statusKey = null;
@@ -523,14 +523,14 @@ export class PlaybackController {
       return;
     }
     if (instance.getIsRunning()) this.pendingEndedIgnores += 1;
-    this.phase = 'paused'; // 先改相位：pause() 内部停源触发的 ended 不算自然结束
+    this.phase = 'paused'; // Change the phase first: the ended fired by pause() stopping the source is not a natural end
     instance.pause();
     this.timer?.pause();
     this.onChange();
   }
 
   private cancelPrepare(): void {
-    // 取消起播：保留最后已提交位置（准备不提交新位置，待准备的定位目标一并丢弃）
+    // Cancel the start: keep the last committed position (preparation commits no new position; the pending seek target is dropped as well)
     this.invalidateTask();
     this.pendingStartFraction = undefined;
     this.phase = 'idle';
@@ -538,7 +538,7 @@ export class PlaybackController {
     this.onChange();
   }
 
-  /** 采用新曲目：丢弃旧合成器、旧时序与位置（归零），空闲等待下次明确播放。 */
+  /** Adopt a new tune: drop the old synth, old timing and position (reset to zero); idle until the next explicit play. */
   private adoptTune(tune: TuneObject | undefined): void {
     this.synthInstance = undefined;
     this.prepared = false;
@@ -547,59 +547,59 @@ export class PlaybackController {
     this.phase = 'idle';
     this.statusKey = null;
     this.pendingStartFraction = undefined;
-    this.timer?.stop(); // 旧版本时序停止（换版归零）
+    this.timer?.stop(); // Stop the old version's timing (version switch resets to zero)
     this.voiceEntries = [];
     this.chordTrackPresent = false;
     if (tune !== undefined) {
-      // 先补音高数据再建时序：时序事件在建构时克隆 midiPitches，晚补不会回填（键盘音域与播放高亮依据）
+      // Fill in pitch data before building the timing: timing events clone midiPitches at construction and late fills are not back-filled (basis of keyboard range and playback highlighting)
       const flattened = this.preparePitchData(tune);
       this.voiceEntries = collectVoices(tune);
-      // 和弦轨检测用无静音参数的展开产物（chordsOff 时完全无轨；静音只改音量、不删音符）
+      // Chord-track detection uses the expansion without mute parameters (with chordsOff the track is absent entirely; muting only changes volume, never removes notes)
       this.chordTrackPresent =
         flattened !== undefined && hasChordTrack(flattened.tracks, this.voiceEntries.length);
       this.timer = this.createTimer(tune);
     } else {
       this.timer = undefined;
     }
-    this.onTimeline(null); // 换版清除播放高亮（新谱面由 main 重建映射，SPEC-PLAY-11）
+    this.onTimeline(null); // Version switch clears playback highlighting (main rebuilds the mapping for the new score, SPEC-PLAY-11)
   }
 
   /**
-   * 补写音符元素的 midiPitches 并返回展开产物：abcjs 只经 setUpAudio（合成 / MIDI 路径）
-   * 把音高写到音符元素上，而 TimingCallbacks 建构即克隆该数据；不先补一次则时序事件无音高，
-   * 键盘音域与播放高亮落空。展开产物用于和弦伴奏检测（音高值不受乐器参数影响）。
+   * Back-fill midiPitches on note elements and return the expansion: abcjs writes pitches onto note elements only via setUpAudio (synth / MIDI path),
+   * while TimingCallbacks clones that data at construction; without a prior fill the timing events have no pitches and
+   * keyboard range and playback highlighting come up empty. The expansion is used for chord accompaniment detection (pitch values are unaffected by instrument parameters).
    */
   private preparePitchData(tune: TuneObject): AudioTracks | undefined {
     try {
       return tune.setUpAudio({});
     } catch (error) {
-      // 音高数据不可用：不阻断渲染与播放，仅键盘音域、播放高亮与和弦开关缺失
+      // Pitch data unavailable: do not block rendering or playback; only keyboard range, playback highlighting and the chord toggle are missing
       console.error('ABC Desk: audio sequence setup failed', error);
       return undefined;
     }
   }
 
-  /** 创建当前曲目的演奏时序（SPEC-PLAY-11 / 12）：速度基准与音频同源，事件回调交给 main 更新播放高亮。 */
+  /** Create the current tune's performance timing (SPEC-PLAY-11 / 12): speed baseline shared with the audio, event callbacks handed to main for playback highlighting. */
   private createTimer(tune: TuneObject): TimingCallbacks | undefined {
     const generation = ++this.timerGeneration;
     try {
       return new TimingCallbacks(tune, {
-        // 速度调整经 qpm 传入（SPEC-PLAY-04）：事件毫秒数随速度缩放，与音频的每小节毫秒数一致
+        // Speed adjustment passed via qpm (SPEC-PLAY-04): event milliseconds scale with speed, consistent with the audio's milliseconds per measure
         qpm: this.warpedQpm(tune),
         eventCallback: (event) => {
           if (generation === this.timerGeneration && this.tune === tune) this.onTimeline(event);
-          // 返回 undefined：结束时允许时序自停（返回 "continue" 才会续播，SPEC-PLAY-03 非循环自然结束）
+          // Return undefined: let the timing stop itself at the end (only returning "continue" would keep going, SPEC-PLAY-03 non-loop natural end)
           return undefined;
         },
       });
     } catch (error) {
-      // 时序不可用：不阻断渲染与播放，仅无播放高亮（映射缺失由 main 按不可用处理）
+      // Timing unavailable: do not block rendering or playback; only playback highlighting is missing (main treats the missing mapping as unavailable)
       console.error('ABC Desk: timing callbacks setup failed', error);
       return undefined;
     }
   }
 
-  /** 以当前速度重建演奏时序（SPEC-PLAY-04）：替换旧时序并记录目标比例，不启动（由起播路径启动）。 */
+  /** Rebuild the performance timing at the current speed (SPEC-PLAY-04): replace the old timing and record the target fraction without starting (the start path starts it). */
   private buildTimer(tune: TuneObject, fraction: number): void {
     this.timerGeneration += 1;
     this.timer?.stop();
@@ -607,39 +607,39 @@ export class PlaybackController {
     this.timer?.setProgress(fraction, 'percent');
   }
 
-  /** 速度调整后的每小节毫秒数（SPEC-PLAY-04）：与 abcjs 官方 SynthController 同式，基准取曲目无参自然速度。 */
+  /** Milliseconds per measure after speed adjustment (SPEC-PLAY-04): same formula as the official abcjs SynthController, based on the tune's natural tempo without parameters. */
   private warpedMillisecondsPerMeasure(tune: TuneObject): number {
     return (tune.millisecondsPerMeasure() * 100) / this.speed;
   }
 
-  /** 速度调整后的每分钟拍数（TimingCallbacks 的 qpm）：由每小节毫秒数反推、取整。 */
+  /** Beats per minute after speed adjustment (qpm for TimingCallbacks): derived back from milliseconds per measure and rounded. */
   private warpedQpm(tune: TuneObject): number {
     const millisecondsPerMeasure = this.warpedMillisecondsPerMeasure(tune);
     return Math.round((tune.getBeatsPerMeasure() / millisecondsPerMeasure) * 60000);
   }
 
   /**
-   * 应用速度 / 静音参数（SPEC-PLAY-02 / 04 / 06）：经内部重建生效，不视为用户暂停、不触发换版；
-   * 播放中重建完成后继续当前快照，暂停 / 空闲时静默重建（由用户手动播放，不自动续播）。
+   * Apply speed / mute parameters (SPEC-PLAY-02 / 04 / 06): takes effect through an internal rebuild, not treated as a user pause and no version switch;
+   * during playback it continues the current snapshot after the rebuild, when paused / idle it rebuilds silently (the user plays manually, no auto-resume).
    */
   private applyAudioParams(): void {
     if (this.tune === undefined) {
       return;
     }
     if (this.phase === 'preparing') {
-      // 准备中：取消旧准备，按新参数重新准备，保留这次仍有效的起播目标
+      // Preparing: cancel the old preparation and prepare again with the new parameters, keeping the still-valid start target
       this.invalidateTask();
-      // 内部参数重启不报告空闲，避免 onChange 重入换版。
+      // An internal parameter restart does not report idle, so onChange does not re-enter a version switch.
       this.beginPrepare();
       return;
     }
     if (this.synthInstance === undefined && this.rebuild === undefined) {
-      return; // 尚未准备：参数在下次准备时自然生效（beginPrepare 读取当前参数）
+      return; // Not prepared yet: the parameters take effect naturally at the next preparation (beginPrepare reads the current parameters)
     }
     this.startRebuild(this.phase === 'playing');
   }
 
-  /** 开始参数重建（SPEC-PLAY-02 / 04 / 06）：旧实例停音销毁，完成后按记录的乐曲比例恢复。 */
+  /** Start a parameter rebuild (SPEC-PLAY-02 / 04 / 06): the old instance is silenced and destroyed; the recorded tune fraction is restored on completion. */
   private startRebuild(resume: boolean): void {
     const instance = this.synthInstance;
     const fraction = this.rebuild?.fraction ?? this.currentFraction();
@@ -648,7 +648,7 @@ export class PlaybackController {
     this.pendingEndedIgnores = 0;
     if (instance !== undefined) {
       try {
-        instance.stop(); // 已撤销归属，旧 ended 不进入当前计数。
+        instance.stop(); // Ownership already dropped; the old ended does not enter the current counter.
       } catch (error) {
         console.error('ABC Desk: stop for rebuild failed', error);
       }
@@ -657,18 +657,18 @@ export class PlaybackController {
       this.buildTimer(this.tune, fraction);
       this.onTimingsChanged();
     }
-    // 作废旧重建（若有）：晚到的完成按代次丢弃、不发声
+    // Invalidate the old rebuild (if any): its late completion is dropped by generation and never sounds
     this.invalidateTask();
     const generation = this.taskGeneration;
     if (resume) {
-      this.statusKey = 'applying-speed'; // 播放中重建：状态区提示短暂缓冲
+      this.statusKey = 'applying-speed'; // Rebuild during playback: the status area shows a short buffering notice
     }
     this.rebuild = { generation, fraction, resume };
     this.beginRebuild(generation, fraction);
     this.onChange();
   }
 
-  /** 参数重建的异步执行：以当前参数初始化新实例，完成后恢复位置与（按需）续播。 */
+  /** Async part of the parameter rebuild: initialize a new instance with the current parameters, then restore position and (if requested) resume. */
   private beginRebuild(generation: number, fraction: number): void {
     const tune = this.tune;
     if (tune === undefined) {
@@ -676,7 +676,7 @@ export class PlaybackController {
       return;
     }
     if (this.soundfontUrl === undefined || !synth.supportsAudio()) {
-      // 音色地址缺失或环境不支持：按能力降级（SPEC-STATE-04），保留最后可靠位置
+      // Soundfont URL missing or environment unsupported: degrade by capability (SPEC-STATE-04), keep the last reliable position
       this.rebuild = undefined;
       this.phase = 'idle';
       this.pendingStartFraction = fraction;
@@ -692,7 +692,7 @@ export class PlaybackController {
       .then(() => generation === this.taskGeneration ? instance.prime() : undefined)
       .then((result) => {
         if (generation !== this.taskGeneration || this.rebuild?.generation !== generation) {
-          // 已取消 / 被接替 / 已换版 / 已超时：晚到的完成不得发声（备用缓冲由 abcjs 内部缓存复用）
+          // Cancelled / taken over / version switched / timed out: a late completion must not sound (the spare buffers are reused from the abcjs internal cache)
           try {
             instance.stop();
           } catch (error) {
@@ -706,7 +706,7 @@ export class PlaybackController {
         window.clearTimeout(this.prepareTimer);
         this.prepareTimer = undefined;
         if (result.status === 'empty') {
-          // 没有可发声的音符：保持空闲，不进入播放（SPEC-STATE-05）
+          // No sounding notes: stay idle, do not enter playback (SPEC-STATE-05)
           this.rebuild = undefined;
           this.phase = 'idle';
           this.pendingStartFraction = undefined;
@@ -720,7 +720,7 @@ export class PlaybackController {
         if (generation !== this.taskGeneration || this.rebuild?.generation !== generation) {
           return;
         }
-        // 重建失败：保留最后可靠位置（下次播放从该处重试），仅状态区提示（SPEC-STATE-04）
+        // Rebuild failed: keep the last reliable position (the next play retries from there), status-area notice only (SPEC-STATE-04)
         this.invalidateTask();
         this.pendingStartFraction = this.rebuild.fraction;
         this.rebuild = undefined;
@@ -731,7 +731,7 @@ export class PlaybackController {
       });
   }
 
-  /** 参数重建完成：安装新实例、恢复记录位置；播放中发起的重建继续播放（SPEC-PLAY-02）。 */
+  /** Parameter rebuild complete: install the new instance and restore the recorded position; a rebuild started during playback keeps playing (SPEC-PLAY-02). */
   private finishRebuild(generation: number, instance: MidiBuffer): void {
     const rebuild = this.rebuild;
     if (rebuild === undefined || rebuild.generation !== generation) {
@@ -746,7 +746,7 @@ export class PlaybackController {
     this.synthInstance = instance;
     this.pendingEndedIgnores = 0;
     this.prepared = true;
-    this.pendingStartFraction = undefined; // 位置由实例与重建状态承载，清掉更早的残留起点
+    this.pendingStartFraction = undefined; // The position is carried by the instance and the rebuild state; clear any earlier leftover start point
     instance.seek(rebuild.fraction, 'percent');
     this.timer?.setProgress(rebuild.fraction, 'percent');
     if (rebuild.resume) {
@@ -758,9 +758,9 @@ export class PlaybackController {
   }
 
   /**
-   * 初始化合成器（首播准备与参数重建共用）：本地音色、静音参数与速度基准。
-   * 乐器统一经 pianoOnlyTuneView 传入（SPEC-ENV-07）：合成器按展开产物的 instrument 请求音色样本，
-   * 视图让"请求集合"与"实际放置"一致为钢琴；原曲目对象不改（导出保留材料指令，SPEC-EXP-05）。
+   * Initialize the synth (shared by first-play preparation and parameter rebuilds): local soundfont, mute parameters and speed baseline.
+   * Instrument unification is passed in via pianoOnlyTuneView (SPEC-ENV-07): the synth requests soundfont samples by the expansion's instrument,
+   * and the view makes "requested set" and "actual placement" agree on piano; the original tune object is untouched (export keeps the material's instructions, SPEC-EXP-05).
    */
   private initSynth(
     tune: TuneObject,
@@ -775,7 +775,7 @@ export class PlaybackController {
       },
     };
     if (this.mutedVoices.size > 0) {
-      // 声部静音（SPEC-PLAY-06）：只把对应轨音量置 0，不改音符、不改谱面与键盘提示
+      // Voice mutes (SPEC-PLAY-06): only set the matching track volume to 0; notes, score and keyboard hints are unchanged
       options.voicesOff = [...this.mutedVoices].sort((first, second) => first - second);
     }
     if (this.chordsMuted) {
@@ -784,13 +784,13 @@ export class PlaybackController {
     return instance.init({
       visualObj: pianoOnlyTuneView(tune),
       audioContext,
-      // 速度基准（SPEC-PLAY-04）：顶层 millisecondsPerMeasure 控制渲染速度（与官方 setWarp 同款）
+      // Speed baseline (SPEC-PLAY-04): the top-level millisecondsPerMeasure controls render speed (same as the official setWarp)
       millisecondsPerMeasure: this.warpedMillisecondsPerMeasure(tune),
       options,
     });
   }
 
-  /** 当前乐曲比例（0–1，含反复的实际演奏顺序）：播放 / 暂停取实时位置，其余取待提交起点。 */
+  /** Current tune fraction (0-1, actual performance order including repeats): playing / paused reads the live position, otherwise the pending start point. */
   private currentFraction(): number {
     if (this.phase === 'playing' || this.phase === 'paused') {
       const total = this.totalMs();
@@ -801,7 +801,7 @@ export class PlaybackController {
     return this.pendingStartFraction ?? 0;
   }
 
-  /** 当前时序的演奏总长（毫秒）：末事件（type: 'end'）即结束点。 */
+  /** Total performance length of the current timing (milliseconds): the last event (type: 'end') is the end point. */
   private totalMs(): number {
     const timings = this.timer?.noteTimings;
     if (timings === undefined || timings.length === 0) {
@@ -810,7 +810,7 @@ export class PlaybackController {
     return timings[timings.length - 1].milliseconds;
   }
 
-  /** 毫秒 → 乐曲比例（SPEC-PLAY-05 / 12）：按当前时序总长换算并夹取。 */
+  /** Milliseconds -> tune fraction (SPEC-PLAY-05 / 12): converted against the current timing total and clamped. */
   private fractionOfMs(milliseconds: number): number {
     const total = this.totalMs();
     if (total <= 0) {
@@ -819,7 +819,7 @@ export class PlaybackController {
     return Math.min(1, Math.max(0, milliseconds / total));
   }
 
-  /** 递增任务代次并清理任务标记与计时器：旧准备的完成不再产生任何影响。 */
+  /** Increment the task generation and clear task markers and timers: completion of the old preparation has no further effect. */
   private invalidateTask(): void {
     this.taskGeneration += 1;
     const pending = this.preparingInstance;
@@ -837,9 +837,9 @@ export class PlaybackController {
   }
 
   /**
-   * 布置准备 / 重建超时（SPEC-PERF-06 / 08 / PLAY-14）：用户尚未交互时处于等待交互而非准备失败，不报超时；
-   * 交互后恢复系统准备的超时保护，长时间无结果才按超时规则处理：
-   * 首播超时终止请求回空闲；参数重建超时进暂停并保留最后可靠位置（SPEC-PERF-08）。
+   * Arm the preparation / rebuild timeout (SPEC-PERF-06 / 08 / PLAY-14): before user interaction we are waiting for interaction, not failing, so no timeout is reported;
+   * after interaction the system preparation timeout protection resumes and only a long silence is handled by the timeout rules:
+   * a first-play timeout terminates the request back to idle; a parameter rebuild timeout goes to paused and keeps the last reliable position (SPEC-PERF-08).
    */
   private armPrepareTimeout(generation: number): void {
     this.prepareTimer = window.setTimeout(() => {
@@ -848,13 +848,13 @@ export class PlaybackController {
         return;
       }
       if (!this.hasUserGesture) {
-        // 等待用户交互：不判失败、提示保持；交互后再恢复计时（SPEC-PLAY-14）
+        // Waiting for user interaction: not a failure, the notice stays; the clock resumes after interaction (SPEC-PLAY-14)
         this.prepareTimer = undefined;
         return;
       }
       this.prepareTimer = undefined;
       if (rebuilding) {
-        // 重建超时（SPEC-PERF-08）：进暂停并保留最后可靠位置；挂起的事件由相位守卫兜底
+        // Rebuild timeout (SPEC-PERF-08): go to paused and keep the last reliable position; pending events are guarded by the phase
         const fraction = this.rebuild?.fraction ?? 0;
         this.invalidateTask();
         this.rebuild = undefined;
@@ -865,7 +865,7 @@ export class PlaybackController {
         this.onChange();
         return;
       }
-      // 准备超时：终止本次请求，再完成也不得发声（SPEC-PLAY-01 / PERF-06）
+      // Preparation timeout: terminate this request; a later completion must not sound (SPEC-PLAY-01 / PERF-06)
       this.invalidateTask();
       this.pendingStartFraction = undefined;
       this.phase = 'idle';
@@ -874,7 +874,7 @@ export class PlaybackController {
     }, PREPARE_TIMEOUT_MS);
   }
 
-  /** 创建或复用 AudioContext；创建失败按音频能力受限处理（SPEC-STATE-04）。 */
+  /** Create or reuse the AudioContext; a creation failure is treated as limited audio capability (SPEC-STATE-04). */
   private ensureAudioContext(): AudioContext | undefined {
     if (this.audioContext === undefined) {
       try {
@@ -886,34 +886,34 @@ export class PlaybackController {
     return this.audioContext;
   }
 
-  /** 监听预览内的首次用户交互：恢复音频设备并在必要时重启挂起的准备（SPEC-PLAY-14）。 */
+  /** Listen for the first user interaction inside the preview: resume the audio device and restart a stuck preparation if needed (SPEC-PLAY-14). */
   private installGestureUnlock(): void {
     const unlock = (): void => {
       this.removeGestureUnlock();
       this.hasUserGesture = true;
       const context = this.audioContext;
       if (context !== undefined && context.state === 'suspended') {
-        // 用户交互上下文是恢复音频设备的标准时机（按钮路径同款行为）
+        // A user interaction context is the standard moment to resume the audio device (same behavior as the button path)
         void context.resume().catch(() => {});
       }
       if (this.phase !== 'preparing') {
         return;
       }
       if (this.statusKey === 'click-to-play') {
-        // 交互已发生：等待提示切换为真实的准备阶段
+        // Interaction happened: switch the waiting notice to the real preparation phase
         this.statusKey = 'preparing';
         this.onChange();
       }
       if (this.prepareTimer === undefined) {
-        // 等待交互期间不计时；交互后恢复系统准备超时保护（SPEC-PERF-06）
+        // No clock while waiting for interaction; after interaction the system preparation timeout protection resumes (SPEC-PERF-06)
         this.armPrepareTimeout(this.taskGeneration);
       }
       const task = this.currentTask;
       if (task === undefined || !task.primeStarted) {
-        // 缓冲尚未开始：音频恢复后 prime 不再挂起，无需重启
+        // Buffering has not started: prime will not hang after audio resume, no restart needed
         return;
       }
-      // 缓冲阶段可能已挂起在音频恢复：先给旧任务一个自行恢复的窗口，仍未完成则重启准备
+      // The buffering stage may be stuck on audio resume: give the old task a window to recover on its own, restart preparation if still unfinished
       window.clearTimeout(this.gestureRecoveryTimer);
       this.gestureRecoveryTimer = window.setTimeout(() => {
         this.gestureRecoveryTimer = undefined;
@@ -929,7 +929,7 @@ export class PlaybackController {
     this.gestureUnlock = unlock;
   }
 
-  /** 移除首次交互监听（触发后或销毁时）。 */
+  /** Remove the first-interaction listener (after it fires or on dispose). */
   private removeGestureUnlock(): void {
     const unlock = this.gestureUnlock;
     if (unlock === undefined) {
@@ -947,7 +947,7 @@ export class PlaybackController {
       return;
     }
     if (this.soundfontUrl === undefined || !synth.supportsAudio()) {
-      // 音色地址缺失或环境不支持：按能力降级，不进入准备（SPEC-STATE-04）
+      // Soundfont URL missing or environment unsupported: degrade by capability and skip preparation (SPEC-STATE-04)
       this.phase = 'idle';
       this.pendingStartFraction = undefined;
       this.statusKey = 'audio-failed';
@@ -959,7 +959,7 @@ export class PlaybackController {
     const task: PrepareTask = { primeStarted: false };
     this.currentTask = task;
     this.phase = 'preparing';
-    // 尚未交互且音频设备未恢复时明确提示等待，不静默停留（SPEC-PLAY-14）
+    // Before interaction, while the audio device is not resumed, say explicitly that we are waiting instead of staying silent (SPEC-PLAY-14)
     const awaitingGesture = !this.hasUserGesture && audioContext?.state === 'suspended';
     this.statusKey = awaitingGesture ? 'click-to-play' : 'preparing';
     this.onChange();
@@ -970,12 +970,12 @@ export class PlaybackController {
     void this.initSynth(tune, instance, audioContext)
       .then(() => {
         if (generation !== this.taskGeneration) return undefined;
-        task.primeStarted = true; // 进入缓冲生成：此后可能等待音频恢复（SPEC-PLAY-14）
+        task.primeStarted = true; // Entering buffer generation: may wait on audio resume from here on (SPEC-PLAY-14)
         return instance.prime();
       })
       .then((result) => {
         if (generation !== this.taskGeneration) {
-          // 已取消 / 已接替 / 已换版 / 已超时的旧任务：停止实例且不得发声。
+          // Old task that was cancelled / taken over / version switched / timed out: stop the instance and never sound.
           try { instance.stop(); } catch (error) { console.error('ABC Desk: stale preparation cleanup failed', error); }
           return;
         }
@@ -985,7 +985,7 @@ export class PlaybackController {
         window.clearTimeout(this.prepareTimer);
         this.prepareTimer = undefined;
         if (result.status === 'empty') {
-          // 没有可发声的音符：保持空闲，不进入播放（SPEC-STATE-05）
+          // No sounding notes: stay idle, do not enter playback (SPEC-STATE-05)
           this.phase = 'idle';
           this.pendingStartFraction = undefined;
           this.statusKey = 'no-notes';
@@ -994,14 +994,14 @@ export class PlaybackController {
         }
         this.synthInstance = instance;
         this.prepared = true;
-        // 成功后执行这次仍有效的请求，无需再点一次（SPEC-PLAY-01）；起点由 startSound 消费
+        // On success run the still-valid request without a second click (SPEC-PLAY-01); the start point is consumed by startSound
         this.startSound();
       })
       .catch((error: unknown) => {
         if (generation !== this.taskGeneration) {
           return;
         }
-        // 音频准备失败：保留谱面，仅状态区提示；用户再次播放即发起新的重试请求（SPEC-STATE-04）
+        // Audio preparation failed: keep the score, status-area notice only; the user's next play issues a new retry request (SPEC-STATE-04)
         this.invalidateTask();
         this.phase = 'idle';
         this.statusKey = 'audio-failed';
@@ -1013,28 +1013,28 @@ export class PlaybackController {
   }
 
   /**
-   * 自然结束：循环开启时回到开头继续演奏（SPEC-PLAY-03），否则停音回到可播放状态并清除播放高亮
-   * （位置与再次播放语义待 P01，不补造默认）。
-   * 程序化停源（重建 / 播放中 seek）触发的 ended 先由计数排除，其余由相位守卫兜底；
-   * abcjs 自然结束后不清 isRunning（僵尸运行态），这里主动 stop 清理，避免后续操作经 seek 误起播。
+   * Natural end: with loop on, return to the beginning and keep playing (SPEC-PLAY-03); otherwise silence, return to the playable state and clear playback highlighting
+   * (position and replay semantics await P01; no default is invented).
+   * ended events from programmatic source stops (rebuild / in-playback seek) are excluded by the counter first, the rest is guarded by the phase;
+   * abcjs does not clear isRunning after a natural end (zombie running state), so stop explicitly here to avoid a later seek starting playback by accident.
    */
   private handleEnded(): void {
     if (this.pendingEndedIgnores > 0) {
       this.pendingEndedIgnores -= 1;
-      return; // 重建 / 播放中 seek 触发的 ended：不算自然结束
+      return; // ended from a rebuild / in-playback seek: not a natural end
     }
     if (this.rebuild !== undefined) {
-      return; // 重建进行中音频未在播放：到达的事件属于程序化停源
+      return; // Rebuild in progress with audio not playing: the arriving event belongs to a programmatic source stop
     }
     if (this.phase !== 'playing') {
-      return; // 手动停止 / 暂停触发的 ended：状态已在对应方法处理
+      return; // ended from a manual stop / pause: state was already handled in the respective method
     }
     const instance = this.synthInstance;
     if (this.loopEnabled) {
-      // 循环（SPEC-PLAY-03）：保持播放相位与播放高亮，回绕不算自然结束——待更新内容由 STATE-07
-      // 在停止 / 暂停时统一应用，回绕本身不触发换版。
-      // 顺序必须 stop → seek → start：自然结束后 abcjs 不清 isRunning（僵尸运行态），
-      // 直接 seek 会经 _kickOffSound 起播；已结束的源 stop 不会再派发 ended，可安全清理。
+      // Loop (SPEC-PLAY-03): keep the playing phase and playback highlighting; the wrap is not a natural end - pending content is applied
+      // uniformly by STATE-07 on stop / pause, the wrap itself triggers no version switch.
+      // The order must be stop -> seek -> start: abcjs does not clear isRunning after a natural end (zombie running state),
+      // a direct seek would start playback via _kickOffSound; stop on an already ended source dispatches no further ended and is safe to clean up.
       if (instance !== undefined) {
         try {
           instance.stop();
@@ -1044,12 +1044,12 @@ export class PlaybackController {
           console.error('ABC Desk: loop restart failed', error);
         }
       }
-      this.syncTimer(0); // 演奏时序同步回到开头，重新回调播放高亮（SPEC-PLAY-11）
+      this.syncTimer(0); // Resynchronize the performance timing to the beginning and re-emit playback highlighting (SPEC-PLAY-11)
       return;
     }
     if (instance !== undefined) {
       try {
-        instance.stop(); // 清理僵尸运行态（已结束的源不会再派发 ended）
+        instance.stop(); // Clean up the zombie running state (an already ended source dispatches no further ended)
       } catch (error) {
         console.error('ABC Desk: stop after ended failed', error);
       }
@@ -1062,8 +1062,8 @@ export class PlaybackController {
 }
 
 /**
- * 音序映射收口（SPEC-ENV-07）：展开产物已由 pianoOnlyTuneView 统一为钢琴（数字索引），
- * 这里对最终音序再统一一次（映射中的 instrument 为音色名），防任何展开遗漏。
+ * Sequence mapping finalization (SPEC-ENV-07): the expansion has already been unified to piano by pianoOnlyTuneView (numeric index);
+ * unify the final sequence once more here (instrument in the mapping is a soundfont name) to guard against anything the expansion missed.
  */
 function forcePianoInstrument(noteMapTracks: NoteMapTrack[]): NoteMapTrack[] {
   for (const track of noteMapTracks) {

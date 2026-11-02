@@ -1,4 +1,4 @@
-/** SPEC-ENV-04 / STATE-02：双向白名单与上下文校验，不接受文件操作路径。 */
+/** SPEC-ENV-04 / STATE-02: two-way allowlist and context validation; file operation paths are never accepted. */
 import {
   PRACTICE_SCHEMA_VERSION,
   parsePracticeRecord,
@@ -19,12 +19,12 @@ export interface WebviewReadyMessage { type: 'ready' }
 export interface WebviewRenderedMessage { type: 'rendered'; context: PreviewContext; ok: boolean; linkable: boolean }
 export interface WebviewPlaybackStateMessage { type: 'playback-state'; context: PreviewContext; state: 'idle' | 'preparing' | 'playing' | 'paused' }
 export interface WebviewRevealSourceMessage { type: 'reveal-source'; viewId: number }
-/** 迁移状态页"打开目标预览"入口（SPEC-LIFE-04）：只带实例编号，目标路径由宿主内部记录决定。 */
+/** "Open target preview" entry on the migration status page (SPEC-LIFE-04): carries only the instance number; the target path comes from the host's own record. */
 export interface WebviewRevealTargetMessage { type: 'reveal-target'; viewId: number }
-/** 解析诊断（SPEC-STATE-06）：只含可靠定位项；不可靠项只留在预览详情，不进入 Problems。 */
+/** Parse diagnostics (SPEC-STATE-06): reliably located items only; unreliable ones stay in the preview details and never reach Problems. */
 export interface WebviewDiagnosticItem { message: string; start: number; end: number }
 export interface WebviewDiagnosticsMessage { type: 'diagnostics'; context: PreviewContext; items: WebviewDiagnosticItem[] }
-/** "查看问题"入口（SPEC-STATE-06）：只打开 Problems，不改变绑定、播放或焦点以外的状态。 */
+/** "Show problems" entry (SPEC-STATE-06): opens Problems only, changes nothing except binding, playback or focus-unrelated state. */
 export interface WebviewShowProblemsMessage { type: 'show-problems'; viewId: number }
 export interface WebviewRevealRangeMessage { type: 'reveal-range'; context: PreviewContext; requestId: number; start: number; end: number }
 export interface WebviewLinkageUnavailableMessage { type: 'linkage-unavailable'; context: PreviewContext; reason: LinkageUnavailableReason }
@@ -33,14 +33,14 @@ export interface WebviewTargetRangesMessage { type: 'target-ranges'; context: Pr
 export interface WebviewPlayFromSelectionRequestMessage { type: 'play-from-selection-request'; context: PreviewContext; requestId: number }
 export interface WebviewContextInvalidatedMessage { type: 'context-invalidated'; context: PreviewContext; cancelRequests?: boolean }
 export interface WebviewSelectTuneMessage { type: 'select-tune'; context: PreviewContext; requestId: number }
-/** 练习记录提交（SPEC-SET-03 ~ 08）：全量界面偏好与曲目记录，由宿主按文件合并保存。 */
+/** Practice record submission (SPEC-SET-03 ~ 08): full UI preferences plus tune records; the host merges and saves per file. */
 export interface WebviewPracticeStateMessage {
   type: 'practice-state';
   context: PreviewContext;
   ui: PracticeUiPreferences;
   tunes: PracticeTuneRecord[];
 }
-/** 重置本文件练习设置（SPEC-SET-07）：宿主删除该文件的记录，不修改 ABC 或播放状态。 */
+/** Reset practice settings for this file (SPEC-SET-07): the host deletes the file's record without touching ABC or playback state. */
 export interface WebviewResetPracticeMessage { type: 'reset-practice'; context: PreviewContext }
 export type WebviewMessage = WebviewReadyMessage | WebviewRenderedMessage | WebviewPlaybackStateMessage |
   WebviewRevealSourceMessage | WebviewRevealTargetMessage | WebviewRevealRangeMessage | WebviewLinkageUnavailableMessage |
@@ -57,19 +57,19 @@ export interface DocumentMessage {
   version: number;
   viewId: number;
   revision: number;
-  /** 可靠迁移（SPEC-LIFE-03）：uri 已变化但属于同一练习，保留会话设置、选曲身份与暂停位置。 */
+  /** Reliable migration (SPEC-LIFE-03): the uri changed but it is the same practice; keep session settings, tune identity and paused position. */
   continued?: boolean;
-  /** 首次源码意图优先于默认第一首；编号属于宿主操作序列。 */
+  /** The first source intent wins over the default first tune; the sequence number belongs to the host's operation order. */
   initialRequest?: { requestId: number; offset: number };
-  /** 已保存文件的练习记录（SPEC-SET-02）：只在视图首次推送时附带，恢复后由 webview 全量回传。 */
+  /** Saved practice record of the file (SPEC-SET-02): attached only on the first push to the view; after restoring, the webview sends the full set back. */
   practice?: PracticeRecord;
 }
-/** 来源状态页（SPEC-LIFE-04 / 06 / 07）：迁移 / 不可用 / 磁盘缺失提示与恢复清除，不带文件操作路径。 */
+/** Source status page (SPEC-LIFE-04 / 06 / 07): migration / unavailable / missing-on-disk notices and recovery clearing, without file operation paths. */
 export interface SourceStateMessage {
   type: 'source-state';
   viewId: number;
   state: 'migrated' | 'unavailable' | 'disk-missing' | 'available';
-  /** 展示用说明（迁移目标名 / 原路径）；'available' 时为空串。 */
+  /** Display-only description (migration target name / original path); empty string when 'available'. */
   detail: string;
 }
 export type PlaybackMessage = { type: 'playback'; viewId: number; requestId: number } & (
@@ -106,7 +106,7 @@ function isRanges(value: unknown): value is SourceHighlightRange[] {
 function isReason(value: unknown): value is LinkageUnavailableReason {
   return value === 'no-mapping' || value === 'no-selection' || value === 'update-pending' || value === 'stale-score' || value === 'choose-tune' || value === 'structure-unreliable';
 }
-/** 诊断条数与文本长度上限：异常输入不撑大消息；位置必须是非空区间。 */
+/** Limits on diagnostic count and text length: malformed input must not bloat messages; a position must be a non-empty range. */
 function isDiagnosticItems(value: unknown): value is WebviewDiagnosticItem[] {
   return Array.isArray(value) && value.length <= 32 && value.every((item) => {
     const diagnostic = object(item);
@@ -170,7 +170,7 @@ export function parseHostMessage(value: unknown): HostMessage | undefined {
       result.initialRequest = { requestId: request.requestId, offset: request.offset };
     }
     if (message.practice !== undefined) {
-      // 无效记录安全回退（SPEC-SET-08）：忽略该项，不拒绝整份文档
+      // Safe fallback for an invalid record (SPEC-SET-08): drop the item instead of rejecting the whole document
       const practice = parsePracticeRecord(message.practice);
       if (practice !== undefined) result.practice = practice;
     }

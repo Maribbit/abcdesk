@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-// 示范绑定：测试标题以 [SPEC-域-序号] 前置，由 scripts/spec-check.mjs 双向校验。
-// 规格正文见 docs/spec/cmd.md 与 docs/spec/set.md。
+// Example binding: test titles are prefixed with [SPEC-domain-number] and checked both ways by scripts/spec-check.mjs.
+// Spec text in docs/spec/cmd.md and docs/spec/set.md.
 
 interface CommandContribution {
   command: string;
@@ -49,7 +49,7 @@ const EXPECTED_COMMAND_IDS = [
 ].sort();
 
 describe('package.json manifest', () => {
-  it('[SPEC-CMD-01] 公开命令恰为八个，ID 集合固定且以 abcdesk. 为前缀', () => {
+  it('[SPEC-CMD-01] exactly eight public commands, with a fixed ID set prefixed abcdesk.', () => {
     const ids = manifest.contributes.commands.map((command) => command.command);
 
     expect(ids).toHaveLength(8);
@@ -59,7 +59,7 @@ describe('package.json manifest', () => {
     }
   });
 
-  it('[SPEC-SET-01] 首版唯一设置为布尔 abcdesk.rememberPracticeSettings，默认 true', () => {
+  it('[SPEC-SET-01] the only setting in the first version is the boolean abcdesk.rememberPracticeSettings, default true', () => {
     const properties = manifest.contributes.configuration.properties;
 
     expect(Object.keys(properties)).toEqual(['abcdesk.rememberPracticeSettings']);
@@ -69,7 +69,7 @@ describe('package.json manifest', () => {
     });
   });
 
-  it('[SPEC-CMD-03] 打开预览的编辑器标题栏与资源管理器入口共用同一命令', () => {
+  it('[SPEC-CMD-03] the editor title bar and explorer entries for opening the preview share one command', () => {
     const menus = manifest.contributes.menus;
 
     const titleEntries = menus['editor/title'].filter(
@@ -87,7 +87,7 @@ describe('package.json manifest', () => {
     });
   });
 
-  it('[SPEC-CMD-15] 编辑器标题栏预览入口以内置图标按钮呈现', () => {
+  it('[SPEC-CMD-15] the editor title bar preview entry is shown as a built-in icon button', () => {
     const openPreview = manifest.contributes.commands.find(
       (command) => command.command === 'abcdesk.openPreviewToSide',
     );
@@ -95,7 +95,7 @@ describe('package.json manifest', () => {
     expect(openPreview?.icon).toBe('$(open-preview)');
   });
 
-  it('[SPEC-CMD-16] .abc 编辑器右键菜单提供从光标播放入口，与命令面板共用同一命令', () => {
+  it('[SPEC-CMD-16] the .abc editor context menu offers play-from-cursor, sharing one command with the command palette', () => {
     const menus = manifest.contributes.menus;
 
     expect(menus['editor/context']).toHaveLength(1);
@@ -106,7 +106,7 @@ describe('package.json manifest', () => {
     });
   });
 
-  it('[SPEC-CMD-17] 预览面板标题栏提供转到源码的图标按钮，与命令面板共用同一命令', () => {
+  it('[SPEC-CMD-17] the preview panel title bar offers a go-to-source icon button, sharing one command with the command palette', () => {
     const menus = manifest.contributes.menus;
     const goToSource = manifest.contributes.commands.find(
       (command) => command.command === 'abcdesk.goToSource',
@@ -124,7 +124,7 @@ describe('package.json manifest', () => {
     expect(goToSource?.icon).toBe('$(go-to-file)');
   });
 
-  it('[SPEC-ENV-10] contributes.languages 声明 abc 语言与 .abc 扩展名', () => {
+  it('[SPEC-ENV-10] contributes.languages declares the abc language with the .abc extension', () => {
     expect(manifest.contributes.languages).toContainEqual({
       id: 'abc',
       extensions: ['.abc'],

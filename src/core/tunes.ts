@@ -1,7 +1,7 @@
 import { TuneBook } from 'abcjs';
 import { appendSource, appendSynthetic, emptyMappedText, normalizeSource, type CharRange, type MappedText } from './sourceMap';
 
-/** SPEC-DOC-01 / 05 / 06：索引仅属于当前目录，id 必须来自真实 X: 行。 */
+/** SPEC-DOC-01 / 05 / 06: the index belongs to the current document only; ids must come from real X: lines. */
 export interface PreviewTune {
   index: number;
   id: string | null;
@@ -16,14 +16,14 @@ export interface TuneCatalog {
   source: string;
   tunes: PreviewTune[];
   issues: CharRange[];
-  /** 最前片段未被可靠识别时，不把后面的曲目当作默认第一首。 */
+  /** When the leading fragment is not reliably identified, later tunes are not treated as the default first tune. */
   initialBlocked: boolean;
 }
 
 interface SourceLine { text: string; start: number; end: number; blocked: boolean; malformed: boolean }
 const FILE_FIELD = /^[ABCDFGHILMmNORrSUZ]:/;
 
-/** 去掉行末注释，只用于元数据识别；渲染输入保留原文。 */
+/** Strip trailing comments for metadata detection only; the render input keeps the original text. */
 function fieldValue(line: string): string {
   return line.slice(2).split(/(?<!\\)%/, 1)[0].trim();
 }
@@ -49,17 +49,17 @@ function sourceLines(text: string): SourceLine[] {
   return lines;
 }
 
-/** 音乐状片段只标记限制，不据此臆造曲目或源码音符。 */
+/** Music-like fragments only flag a limitation; no tune or source notes are invented from them. */
 function suspicious(line: string): boolean {
   const text = line.trim();
   if (text === '' || text.startsWith('%')) return false;
   if (/^[A-Za-z]:/.test(text)) return true;
   if (/^[A-Ga-gzZxX0-9,/'^_=|:\][(){}\s.+!~"-]+$/.test(text) || /[|[\]{}"^_=!+~]/.test(text)) return true;
-  // 明确的普通说明不算音乐；无法区分的单词、符号串仍报告未识别片段。
+  // Plain explanatory text is not music; indistinguishable words or symbol runs are still reported as unrecognized fragments.
   return !(/^[\p{L}\p{N}\s，。！？：；、,.;:!?()（）‘’“”'-]+$/u.test(text) && /[\p{Script=Han}\s]/u.test(text));
 }
 
-/** 文本字段按字段整体覆盖；宏按各自左值覆盖，不能删除其他宏的默认定义。 */
+/** Text fields are overridden as a whole per field; macros are overridden per left-hand side and cannot remove other macros' defaults. */
 function fieldKey(line: string): string | undefined {
   if (!FILE_FIELD.test(line) || line.startsWith('I:')) return undefined;
   if (/^[Um]:/.test(line)) return /^([Um]:)\s*([^=\s]+)\s*=/.exec(line)?.slice(1).join('');
@@ -108,10 +108,10 @@ export function createTuneCatalog(source: string): TuneCatalog {
       }
     }
   }
-  // 无 X: 的单片段沿用 abcjs 支持；纯注释/空白不制造一个空曲目选择项。
+  // A single fragment without X: follows abcjs support; pure comments / blank text do not produce an empty tune option.
   const meaningful = lines.find((line) => !line.blocked && line.text.trim() !== '' && !line.text.trim().startsWith('%'));
   if (anchors.length === 0 && meaningful !== undefined) {
-    // 无 X: 时只剥离前导空白/注释；适用指令仍作为不可联动前缀保留。
+    // Without X: only leading whitespace / comments are stripped; applicable directives stay as a non-linkable prefix.
     header.push(...lines.filter((line) => line.start < meaningful.start && (line.blocked || /^%%/.test(line.text))));
   }
   if (header.some((line) => line.malformed)) initialBlocked = true;
@@ -126,7 +126,7 @@ export function createTuneCatalog(source: string): TuneCatalog {
     let reliable = !header.some((line) => line.malformed) && !region.some((line) => line.malformed);
     for (const line of region) {
       if (line.start >= end && !line.blocked && suspicious(line.text)) report(line);
-      // TuneBook 会误切文本块内 X:，也会截断块内空行：拒绝展示不完整产物。
+      // TuneBook wrongly splits X: inside text blocks and truncates blank lines inside them: refuse to show incomplete output.
       if ((line.blocked && /^X:/.test(line.text)) || (line.blocked && line.text.trim() === '')) {
         report(line);
         reliable = false;
@@ -144,7 +144,7 @@ export function createTuneCatalog(source: string): TuneCatalog {
     }
     if (explicit) appendSource(input, normalized, first.end, Math.max(first.end, end));
     else appendSource(input, normalized, first.start, end);
-    // 与真实解析器复核分界，不能把被它忽略的第二段当作已渲染。
+    // Cross-check the boundary with the real parser; a second section it ignored must not be treated as rendered.
     const book = new TuneBook(input.text);
     if (book.tunes.length !== 1 || (book.tunes[0]?.pure ?? '').trim() !== input.text.trim()) {
       reliable = false;
@@ -168,7 +168,7 @@ export function createTuneCatalog(source: string): TuneCatalog {
   return { source, tunes, issues, initialBlocked };
 }
 
-/** 两端都必须唯一；不对 X: 做数字转换，避免合并不同显式标识。 */
+/** Both sides must be unique; X: is not converted to a number so different explicit ids are not merged. */
 export function matchTune(previous: TuneCatalog, index: number, next: TuneCatalog): number | null {
   const id = previous.tunes[index]?.id;
   if (id === null || id === undefined || previous.tunes.filter((tune) => tune.id === id).length !== 1) return null;

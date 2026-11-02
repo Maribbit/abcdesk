@@ -22,66 +22,66 @@ import { createTuneCatalog } from '../core/tunes';
 import { PracticeStore, mergePracticeIfChanged } from './practiceStore';
 
 /**
- * 音乐预览面板管理（SPEC-CMD-03 / 06 / 07 / 09 / 10 / 12、SPEC-ENV-03 / 04 / 05、SPEC-PLAY-01 / 02 / 11）：
- * - 同一文档复用已有面板，不重复创建（SPEC-CMD-03）；
- * - webview 资源仅经 asWebviewUri 加载，CSP 只放行 nonce 自有脚本与扩展自有资源（SPEC-ENV-03 / 05）；
- * - 不信任 webview 消息，经 parseWebviewMessage 按类型与版本校验（SPEC-ENV-04）；
- * - 文档变化（含未保存修改）经防抖推送到对应预览；预览标签标题标明文件名与尚未保存的新文档（SPEC-CMD-06）；
- * - 播放中的换版与应用时机由 webview 按 SPEC-STATE-07 执行，宿主只负责推送最新版本；
- * - 播放类命令可按需显示预览并保留源码焦点，首次渲染成功后仅执行仍有效的起播请求（SPEC-CMD-07 / 09）；
- * - 文档变化到新版本渲染确认之间停用源码联动：不推送光标、不定位、不起播，并清除源码高亮（SPEC-PLAY-11）；
- * - 点击谱面音符的源码定位只设选区与滚动、不抢焦点，编辑器侧以专用轮廓标记呈现当前目标音符的源码区间（随目标同步、与原生选区 / 同文高亮双重区分）；播放高亮只对可见编辑器设装饰（SPEC-PLAY-11）；
- * - 面板隐藏按暂停处理、恢复后不自动播放（SPEC-PLAY-02）；同一窗口内只允许一处预览发声（SPEC-PLAY-01）；
- * - 空状态的"转到源码编辑"入口与 goToSource 命令打开来源文档并转移焦点，来源标签关闭后按 URI 重新打开（SPEC-STATE-05 / CMD-12）。
+ * Music preview panel management (SPEC-CMD-03 / 06 / 07 / 09 / 10 / 12, SPEC-ENV-03 / 04 / 05, SPEC-PLAY-01 / 02 / 11):
+ * - the same document reuses its existing panel instead of creating a new one (SPEC-CMD-03);
+ * - webview resources are loaded only via asWebviewUri; the CSP allows only nonce'd own scripts and the extension's own resources (SPEC-ENV-03 / 05);
+ * - webview messages are untrusted and validated by type and version through parseWebviewMessage (SPEC-ENV-04);
+ * - document changes (including unsaved edits) are pushed to the matching preview with debouncing; the tab title shows the file name and marks unsaved new documents (SPEC-CMD-06);
+ * - version switching during playback and its timing are handled by the webview per SPEC-STATE-07; the host only pushes the latest version;
+ * - playback commands may reveal the preview on demand while keeping source focus; after the first successful render only still-valid start requests run (SPEC-CMD-07 / 09);
+ * - between a document change and the render confirmation of the new version source linkage is suspended: no cursor pushes, no locating, no starting playback, and source highlighting is cleared (SPEC-PLAY-11);
+ * - locating source from a clicked score note only sets the selection and scrolls without stealing focus; the editor shows the current target note's source range with a dedicated outline decoration (synced with the target, distinct from both the native selection and same-text highlighting); playback highlighting only decorates visible editors (SPEC-PLAY-11);
+ * - hiding the panel is treated as pause and it does not auto-play on restore (SPEC-PLAY-02); only one preview per window may produce sound (SPEC-PLAY-01);
+ * - the empty state's "go to source" entry and the goToSource command open the source document and move focus; a closed source tab is reopened by URI (SPEC-STATE-05 / CMD-12).
  *
- * 文件生命周期（SPEC-LIFE-02 ~ 08）：
- * - 可靠重命名 / 移动（onDidRenameFiles 对）与未保存文档首次保存（同一 TextDocument 对象 URI 原地更新）
- *   接续原预览：先暂停并取消待起播与未提交更新，再重新核验内容——内容与版本未变时只更新身份
- *   （保留暂停位置、设置与映射），变化或从只读恢复时按常规换版推送并归零；
- * - 迁移目标已有面板时目标优先（SPEC-LIFE-04）：来源面板保留为只读"文件已迁移"状态页
- *   （只提供目标预览入口），不自动打开目标、不续播、不抢焦点；
- * - 绑定文件经专用 FileSystemWatcher 观察 create / change / delete（SPEC-LIFE-08）：
- *   统一防抖 + 存在性复核 + 世代序号作废过期核验，短暂删除再创建不误判、乱序不误伤；
- * - 无可用编辑器缓冲区的删除 / 放弃转入来源不可用（SPEC-LIFE-06）：停音、只读参考、
- *   重新可读后重新获取并归零（SPEC-LIFE-07）；有缓冲区时只提示磁盘状态并继续按缓冲区预览。
+ * File lifecycle (SPEC-LIFE-02 ~ 08):
+ * - a reliable rename / move (an onDidRenameFiles pair) and the first save of an unsaved document (the same TextDocument object with its URI updated in place)
+ *   continue the original preview: pause first and cancel pending start requests and uncommitted updates, then re-verify the content - when content and version are unchanged only the identity is updated
+ *   (keeping paused position, settings and mapping); on change or on recovery from read-only the usual version push with reset applies;
+ * - when the migration target already has a panel the target wins (SPEC-LIFE-04): the source panel is kept as a read-only "file moved" status page
+ *   (offering only an entry to the target preview), without opening the target, resuming playback or stealing focus;
+ * - the bound file is observed through a dedicated FileSystemWatcher for create / change / delete (SPEC-LIFE-08):
+ *   shared debouncing + existence re-check + generation numbers that invalidate stale checks, so brief delete-then-create is not misjudged and out-of-order events do no harm;
+ * - delete / discard without a usable editor buffer enters the source-unavailable state (SPEC-LIFE-06): silence, read-only reference,
+ *   and a fresh fetch with reset once readable again (SPEC-LIFE-07); with a buffer only the disk state is reported and the preview keeps following the buffer.
  *
- * 解析诊断（SPEC-STATE-06）：
- * - webview 只上报可连续映射到曲目原文的告警位置，不可靠定位留在预览详情；
- * - 宿主按最近推送的版本与修订校验，晚到结果不恢复旧错误；每次渲染全量覆盖，空列表清除；
- * - 可靠迁移时 Problems 条目跟随新 URI；只读来源与面板关闭时清除；不自动打开 Problems。
+ * Parse diagnostics (SPEC-STATE-06):
+ * - the webview reports only warning positions that map contiguously to the tune source; unreliable positions stay in the preview details;
+ * - the host validates against the latest pushed version and revision; late results never restore old errors; every render replaces the whole set and an empty list clears it;
+ * - on a reliable migration the Problems entries follow the new URI; cleared for read-only sources and on panel close; Problems is never opened automatically.
  *
- * 键盘可视化（SPEC-PLAY-08 / 09）与播放控件（速度 / 进度 / 声部，SPEC-PLAY-04 / 05 / 06）
- * 均在 webview 内实现：宿主只提供 DOM 骨架与样式，界面状态不新增消息
- * （跨会话恢复留待设置记忆批次，SPEC-SET-05）；进度条独占一行，支持拖动与键盘定位。
- * 布局形态：顶栏（播放控件）粘在预览顶部、键盘作为独立 dock 粘在底部（无多余按钮，形态对齐 chatmusic 调校版），
- * 长谱滚动时两者保持可见可点；低高度回退内容整体滚动、键盘回文档流（D0 低高度例外，阈值为暂订实测项）。
+ * Keyboard visualization (SPEC-PLAY-08 / 09) and playback controls (speed / progress / voices, SPEC-PLAY-04 / 05 / 06)
+ * are all implemented inside the webview: the host only provides the DOM skeleton and styles, and UI state adds no messages
+ * (cross-session restore is left to the settings batch, SPEC-SET-05); the progress bar owns a full row and supports dragging and keyboard positioning.
+ * Layout: the top bar (playback controls) sticks to the top of the preview and the keyboard is a separate dock stuck to the bottom (no extra buttons, shape aligned with the tuned chatmusic version);
+ * both stay visible and clickable while a long score scrolls; the low-height fallback scrolls the whole content with the keyboard back in document flow (D0 low-height exception, threshold is a provisional measured item).
  */
 
-/** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）。 */
+/** Start request to run once the first render completes (SPEC-CMD-07 / 09). */
 type PendingRequest = { kind: 'toggle' } | { kind: 'play-from-cursor'; offset: number; version: number };
 
-/** 面板条目：面板本身与宿主侧需要核验的最小状态。 */
+/** Panel entry: the panel itself plus the minimal state the host must verify. */
 interface PanelEntry {
   panel: vscode.WebviewPanel;
-  /** 绑定文档标识（URI 字符串）；预览在前台时作为控制命令的活动目标（SPEC-CMD-04）。 */
+  /** Bound document identity (URI string); the active target for control commands while the preview is in the foreground (SPEC-CMD-04). */
   uri: string;
-  /** 最近一次推送 / 绑定的文档；就绪握手后据此补推最新内容。 */
+  /** Most recently pushed / bound document; the latest content is re-pushed from it after the ready handshake. */
   document: vscode.TextDocument;
-  /** 最近一次推送的文档版本（SPEC-ENV-04 版本校验基准，rendered 消息按此比对）。 */
+  /** Most recently pushed document version (baseline for SPEC-ENV-04 version checks; rendered messages are compared against it). */
   version: number;
-  /** 最近一次推送给预览的文档文本（SPEC-CMD-12）：来源标签关闭后重新打开时按内容差异决定是否换版。 */
+  /** Most recently pushed document text (SPEC-CMD-12): decides by content diff whether to switch versions when a closed source tab is reopened. */
   lastPushedAbc: string | undefined;
-  /** 是否已收到过渲染结果（播放类命令据此决定立即转发还是等待渲染）。 */
+  /** Whether a render result has been received (playback commands use it to decide between forwarding immediately and waiting for the render). */
   renderedOnce: boolean;
-  /** 待首次渲染完成后执行的起播请求（SPEC-CMD-07 / 09）；取消或渲染失败时丢弃。 */
+  /** Start request to run once the first render completes (SPEC-CMD-07 / 09); dropped on cancel or render failure. */
   pendingRequest: PendingRequest | undefined;
-  /** 联动停用窗口（SPEC-PLAY-11）：文档已变化、新版本尚未渲染确认；期间不推送光标、不定位、不起播。 */
+  /** Linkage suspension window (SPEC-PLAY-11): the document changed and the new version is not yet confirmed rendered; no cursor pushes, locating or starting playback meanwhile. */
   suspend: boolean;
-  /** 联动停用期间记录的最新光标偏移，渲染完成后补发（SPEC-PLAY-11）。 */
+  /** Latest cursor offset recorded during the suspension window, re-sent once rendering completes (SPEC-PLAY-11). */
   lastCursorOffset: number | undefined;
-  /** 防抖期间待推送的最新文档（SPEC-CMD-06）。 */
+  /** Latest document waiting to be pushed during debouncing (SPEC-CMD-06). */
   pendingChange: vscode.TextDocument | undefined;
-  /** 当前目标音符的源码区间（SPEC-PLAY-11 轮廓标记 / SPEC-CMD-12 落点依据），由 webview 目标回传驱动；目标清除 / 内容变化时清空，不套用旧偏移。 */
+  /** Source range of the current target note (SPEC-PLAY-11 outline decoration / SPEC-CMD-12 landing point), driven by the webview's target report; cleared when the target is cleared or the content changes, never reusing an old offset. */
   targetRanges: SourceHighlightRange[];
   viewId: number;
   revision: number;
@@ -92,43 +92,43 @@ interface PanelEntry {
   lastTargetRequest: number;
   context: PreviewContext | undefined;
   phase: WebviewPlaybackStateMessage['state'];
-  /** 来源状态（SPEC-LIFE-04 / 06）：迁移状态页 / 来源不可用 / 磁盘缺失提示；未标记即正常绑定。 */
+  /** Source status (SPEC-LIFE-04 / 06): migration status page / source unavailable / missing-on-disk notice; unset means normally bound. */
   sourceState: 'migrated' | 'unavailable' | 'disk-missing' | undefined;
-  /** 迁移目标 URI（SPEC-LIFE-04）：状态页"打开目标预览"入口的目标，不接受 webview 提供的路径。 */
+  /** Migration target URI (SPEC-LIFE-04): target of the status page's "open target preview" entry; paths supplied by the webview are not accepted. */
   migratedTo: string | undefined;
-  /** 已发布到 Problems 的诊断（SPEC-STATE-06）：迁移时随身份迁移，只读 / 关闭时清除。 */
+  /** Diagnostics published to Problems (SPEC-STATE-06): migrate with the identity, cleared on read-only / close. */
   diagnostics: vscode.Diagnostic[];
-  /** 本文件最近提交的练习记录（SPEC-SET-02 / 08）：已保存文档取自工作区状态，未保存文档仅留在会话内。 */
+  /** Most recently committed practice record for this file (SPEC-SET-02 / 08): saved documents read it from workspace state, unsaved documents keep it in the session only. */
   practiceState: PracticeRecord | undefined;
-  /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立，改键 / 关闭时重建或释放。 */
+  /** Dedicated watcher for the bound file (SPEC-LIFE-08): created only for file URIs, rebuilt or disposed on rekey / close. */
   watcher: vscode.FileSystemWatcher | undefined;
 }
 
-/** 文档更新推送防抖（毫秒）：连续输入只在稳定后推送一次最新版本。 */
+/** Debounce for document update pushes (ms): continuous typing pushes the latest version only once it settles. */
 const UPDATE_DEBOUNCE_MS = 300;
 
-/** 文件事件核验防抖（毫秒，SPEC-LIFE-08 实测记录）：短暂删除再创建 / 原子替换合并为一次存在性复核。 */
+/** Debounce for file event verification (ms, measured for SPEC-LIFE-08): brief delete-then-create / atomic replace collapse into one existence re-check. */
 const SOURCE_CHECK_DEBOUNCE_MS = 300;
 
 export class PreviewPanelManager implements vscode.Disposable {
   private readonly panels = new Map<string, PanelEntry>();
   private viewSequence = 0;
   private readonly disposables: vscode.Disposable[] = [];
-  /** 各文档待推送的防抖计时器（按 URI 键控）。 */
+  /** Pending debounce timers per document (keyed by URI). */
   private readonly updateTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** 各绑定文件的核验计时器与世代序号（SPEC-LIFE-08）：乱序到达的过期核验按世代作废。 */
+  /** Verification timer and generation number per bound file (SPEC-LIFE-08): stale checks arriving out of order are invalidated by generation. */
   private readonly sourceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly sourceGenerations = new Map<string, number>();
-  /** 源码播放高亮装饰（SPEC-PLAY-11）：只对可见编辑器设置，不滚动、不移动光标。 */
+  /** Source playback highlight decoration (SPEC-PLAY-11): applied only to visible editors, without scrolling or moving the cursor. */
   private readonly sourceHighlight = vscode.window.createTextEditorDecorationType({
     backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
     overviewRulerColor: new vscode.ThemeColor('editor.findMatchHighlightBorder'),
   });
   /**
-   * 当前目标音符的联动轮廓标记（SPEC-PLAY-11）：描边 + 概览标尺刻度，
-   * 与原生选区（圆角填充）和 VS Code 同文高亮（灰盒）以形状与颜色双重区分；
-   * 由各文档当前目标音符的源码区间（targetRanges）驱动：点选 / 查阅命中后发生者胜，
-   * 目标清除、内容变化或面板关闭时清除。
+   * Linkage outline decoration for the current target note (SPEC-PLAY-11): border + overview ruler mark,
+   * distinguished from the native selection (rounded fill) and VS Code same-text highlighting (grey box) by both shape and color;
+   * driven by each document's current target note range (targetRanges): the latest click / inspection hit wins,
+   * cleared when the target is cleared, the content changes or the panel closes.
    */
   private readonly linkedNote = vscode.window.createTextEditorDecorationType({
     border: '1px dashed',
@@ -136,25 +136,25 @@ export class PreviewPanelManager implements vscode.Disposable {
     overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.infoForeground'),
     overviewRulerLane: vscode.OverviewRulerLane.Center,
   });
-  /** 解析诊断集合（SPEC-STATE-06）：按绑定文档键控，每次渲染全量覆盖，空列表即清除。 */
+  /** Parse diagnostics collection (SPEC-STATE-06): keyed by bound document, replaced wholesale on every render, an empty list clears. */
   private readonly diagnostics = vscode.languages.createDiagnosticCollection('abcdesk');
-  /** 练习记录存取（SPEC-SET-02 ~ 08）：工作区状态，按文件 URI 分键。 */
+  /** Practice record storage (SPEC-SET-02 ~ 08): workspace state keyed by file URI. */
   private readonly practiceStore: PracticeStore;
 
   constructor(private readonly extensionUri: vscode.Uri, workspaceState?: vscode.Memento) {
     this.practiceStore = new PracticeStore(workspaceState);
-    // 可见编辑器变化时同步轮廓标记（SPEC-PLAY-11）：新可见的编辑器按当前目标区间重绘
+    // Sync the outline decoration when visible editors change (SPEC-PLAY-11): newly visible editors are redrawn from the current target range
     this.disposables.push(
       vscode.window.onDidChangeVisibleTextEditors(() => this.syncLinkedDecorations()),
     );
   }
 
-  /** 创建或显示给定文档的预览；同文件已有预览时显示并推送最新内容（只显示，不起播）。 */
+  /** Create or reveal the preview for the given document; an existing preview for the same file is revealed and gets the latest content (reveal only, no playback). */
   createOrShow(document: vscode.TextDocument): void {
     const entry = this.panels.get(document.uri.toString());
     if (entry !== undefined) {
       entry.panel.reveal();
-      // 显式重新预览（SPEC-LIFE-07）：清除只读来源状态，恢复可播放绑定
+      // Explicit re-preview (SPEC-LIFE-07): clear the read-only source state and restore a playable binding
       this.resumeBinding(entry);
       this.pushDocument(entry, document);
       return;
@@ -162,18 +162,18 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.createPanel(document);
   }
 
-  /** 播放 / 暂停命令入口（SPEC-CMD-07 / 09）：播放分支可创建或显示预览并保留源码焦点。 */
+  /** Play / pause command entry (SPEC-CMD-07 / 09): the play branch may create or reveal the preview while keeping source focus. */
   requestToggle(document: vscode.TextDocument): void {
     const entry = this.panels.get(document.uri.toString());
     if (entry === undefined) {
-      // 按需创建：待首次渲染完成后执行仍有效的起播请求（SPEC-CMD-07）
+      // Create on demand: run the still-valid start request once the first render completes (SPEC-CMD-07)
       this.createPanel(document, { kind: 'toggle' });
       return;
     }
-    // 只读来源状态（SPEC-LIFE-04 / 06）：不执行旧绑定的播放；webview 侧按钮禁用为兜底
+    // Read-only source state (SPEC-LIFE-04 / 06): do not play the old binding; the disabled webview buttons are the fallback
     if (this.isReadOnlyEntry(entry)) return;
     if (!entry.panel.visible) {
-      // 隐藏时明确起播须先显示对应预览，不提供隐藏面板后台发声（SPEC-CMD-07）
+      // When hidden, starting playback requires revealing the preview first; no background sound from a hidden panel (SPEC-CMD-07)
       entry.panel.reveal(undefined, true);
     }
     if (!entry.renderedOnce) {
@@ -185,8 +185,8 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * "从光标播放"命令入口（SPEC-CMD-07 / 08 / PLAY-12）：按需创建或显示预览并保留源码焦点；
-   * 起播前先推送待更新文档，保证按最新版本映射；无有效映射时由 webview 回原因说明。
+   * "Play from cursor" command entry (SPEC-CMD-07 / 08 / PLAY-12): creates or reveals the preview on demand while keeping source focus;
+   * pending document updates are pushed before starting so the mapping uses the latest version; with no valid mapping the webview reports the reason.
    */
   requestPlayFromCursor(document: vscode.TextDocument, offset: number): void {
     const entry = this.panels.get(document.uri.toString());
@@ -195,11 +195,11 @@ export class PreviewPanelManager implements vscode.Disposable {
       this.createPanel(document, request);
       return;
     }
-    // 只读来源状态（SPEC-LIFE-04 / 06）：不执行旧绑定的起播，也不推送旧正文（避免误解除只读）
+    // Read-only source state (SPEC-LIFE-04 / 06): do not start the old binding and do not push the old text (which would wrongly lift read-only)
     if (this.isReadOnlyEntry(entry)) return;
     if (!entry.panel.visible) entry.panel.reveal(undefined, true);
     this.flushDocumentUpdate(entry);
-    // 内容以最近一次推送为准（entry.version 是推送簿记；重开对象可能带来不同版本号）
+    // Content follows the most recent push (entry.version is push bookkeeping; a reopened object may carry a different version number)
     if (entry.lastPushedAbc !== document.getText()) this.pushDocument(entry, document);
     if ((entry.phase === 'playing' || entry.phase === 'preparing') && entry.appliedRevision !== entry.revision) {
       entry.pendingRequest = undefined;
@@ -215,7 +215,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     void entry.panel.webview.postMessage(message);
   }
 
-  /** "从所选音符播放"命令入口（SPEC-CMD-08 / PLAY-12）：取预览内的当前目标音符；预览不存在时说明先打开预览。 */
+  /** "Play from selected note" command entry (SPEC-CMD-08 / PLAY-12): uses the current target note in the preview; without a preview it asks to open one first. */
   requestPlayFromSelection(document: vscode.TextDocument, targetRequestId?: number): void {
     const entry = this.panels.get(document.uri.toString());
     if (entry === undefined) {
@@ -233,12 +233,12 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * "转到源码编辑"命令（SPEC-CMD-12）：打开来源文档并显式转移焦点；
-   * 无有效音符映射时只打开文件、不套用旧偏移；来源标签已关闭时按 URI 重新打开。
+   * "Go to source" command (SPEC-CMD-12): opens the source document and explicitly moves focus;
+   * without a valid note mapping it only opens the file and does not reuse an old offset; a closed source tab is reopened by URI.
    */
   async requestGoToSource(document: vscode.TextDocument): Promise<void> {
     if (document.isClosed) {
-      // 防御：收到已关闭的文档对象时按 URI 走重新打开路径（SPEC-CMD-12）
+      // Defensive: a closed document object takes the reopen-by-URI path (SPEC-CMD-12)
       await this.requestGoToSourceByUri(document.uri.toString());
       return;
     }
@@ -266,9 +266,9 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 来源标签已关闭时的"转到源码编辑"（SPEC-CMD-12）：文件可读取时按 URI 重新打开并显式转移焦点，
-   * 预览继续绑定该文件（SPEC-LIFE-05）——磁盘内容有变化时按常规换版规则推送（SPEC-STATE-07），
-   * 未变化不推送以避免无谓换版归零、保留播放位置；文件被删除 / 无法读取时说明原因，不自动新建同路径文件。
+   * "Go to source" when the source tab is closed (SPEC-CMD-12): a readable file is reopened by URI with focus moved explicitly,
+   * and the preview stays bound to that file (SPEC-LIFE-05) - changed disk content is pushed under the usual version switch rules (SPEC-STATE-07),
+   * unchanged content is not pushed to avoid a needless reset and to keep the playback position; a deleted / unreadable file is explained, no file is recreated at the same path.
    */
   async requestGoToSourceByUri(uriText: string): Promise<void> {
     try {
@@ -277,7 +277,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       if (entry !== undefined) {
         entry.document = document;
         if (entry.lastPushedAbc !== document.getText()) {
-          // 标签关闭期间的磁盘变化：先停用旧联动，再按最新内容换版（SPEC-PLAY-11 / SPEC-STATE-07）
+          // Disk changes while the tab was closed: suspend the old linkage first, then switch to the latest content (SPEC-PLAY-11 / SPEC-STATE-07)
           entry.suspend = true;
           entry.targetRanges = [];
           this.clearSourceHighlight(entry);
@@ -295,7 +295,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 来源文档打开失败的统一说明（SPEC-CMD-12）：不静默失败，不自动新建同路径文件。 */
+  /** Shared explanation when the source document fails to open (SPEC-CMD-12): no silent failure, no recreating a file at the same path. */
   private reportSourceUnavailable(error: unknown): void {
     console.error('ABC Desk: go to source failed', error);
     void vscode.window.showInformationMessage(
@@ -303,7 +303,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     );
   }
 
-  /** 停止命令入口（SPEC-CMD-10 / 11）：不新建预览；停音与取消起播不因音频未就绪失效。 */
+  /** Stop command entry (SPEC-CMD-10 / 11): never creates a preview; silencing and cancelling a start do not depend on audio readiness. */
   requestStop(document: vscode.TextDocument): void {
     const entry = this.panels.get(document.uri.toString());
     if (entry === undefined) {
@@ -313,7 +313,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.postPlayback(entry, 'stop');
   }
 
-  /** 当前处于前台的预览所绑定的文档；预览在前台时作为控制命令的活动目标（SPEC-CMD-04）：只读状态页不参与。 */
+  /** Document bound to the foreground preview; the active target for control commands while the preview is in the foreground (SPEC-CMD-04): read-only status pages do not take part. */
   activeDocument(): vscode.TextDocument | undefined {
     for (const entry of this.panels.values()) {
       if (entry.panel.active && !this.isReadOnlyEntry(entry)) {
@@ -323,7 +323,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     return undefined;
   }
 
-  /** 前台预览的绑定 URI（SPEC-CMD-04 / CMD-12）：绑定不因来源标签关闭而失效（SPEC-LIFE-05），供"转到源码编辑"按 URI 重新打开；只读状态页不参与。 */
+  /** Bound URI of the foreground preview (SPEC-CMD-04 / CMD-12): the binding survives the source tab closing (SPEC-LIFE-05) so "go to source" can reopen by URI; read-only status pages do not take part. */
   activeBoundUri(): string | undefined {
     for (const entry of this.panels.values()) {
       if (entry.panel.active && !this.isReadOnlyEntry(entry)) {
@@ -333,25 +333,25 @@ export class PreviewPanelManager implements vscode.Disposable {
     return undefined;
   }
 
-  /** 绑定该文档的预览面板是否仍打开（SPEC-EXP-03）：从预览发起的导出在面板关闭后取消。 */
+  /** Whether the preview panel bound to this document is still open (SPEC-EXP-03): exports started from the preview are cancelled once the panel closes. */
   isPreviewOpen(uri: string): boolean {
     return this.panels.has(uri);
   }
 
-  /** 预览是否落后于最新文档（SPEC-EXP-01）：文档已变化、新版本尚未渲染确认。 */
+  /** Whether the preview lags behind the latest document (SPEC-EXP-01): the document changed and the new version is not yet confirmed rendered. */
   isPreviewStale(uri: string): boolean {
     const entry = this.panels.get(uri);
     return entry !== undefined && (entry.pendingChange !== undefined || entry.appliedRevision !== entry.revision);
   }
 
-  /** 文档内容或保存状态变化时推送到对应预览（无对应预览时忽略）；连续变化防抖，只推送稳定后的最新版本；只读状态页不接受更新。 */
+  /** Push document content or save-state changes to the matching preview (ignored without one); continuous changes are debounced so only the settled latest version is pushed; read-only status pages accept no updates. */
   notifyDocumentChanged(document: vscode.TextDocument): void {
     const uri = document.uri.toString();
     const entry = this.panels.get(uri);
     if (entry === undefined || this.isReadOnlyEntry(entry)) {
       return;
     }
-    // 从发现内容变化起立即停用源码联动（SPEC-PLAY-11）：清除播放高亮、丢弃旧映射定位依据
+    // Suspend source linkage as soon as a content change is seen (SPEC-PLAY-11): clear playback highlighting and drop the old mapping as a locating basis
     entry.suspend = true;
     entry.targetRanges = [];
     this.clearSourceHighlight(entry);
@@ -371,15 +371,15 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 可靠重命名 / 移动（SPEC-LIFE-03 / 04）：onDidRenameFiles 的旧 → 新对是唯一可确认的迁移依据；
-   * 目标无冲突时接续原预览（先暂停、再重新核验内容），冲突时来源保留为只读"文件已迁移"状态页。
+   * Reliable rename / move (SPEC-LIFE-03 / 04): the old -> new pair from onDidRenameFiles is the only confirmable migration evidence;
+   * without a target conflict the original preview continues (pause first, then re-verify the content); on conflict the source stays as a read-only "file moved" status page.
    */
   notifyFilesRenamed(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): void {
     for (const file of files) {
       const oldKey = file.oldUri.toString();
       const newKey = file.newUri.toString();
       if (oldKey === newKey) continue;
-      // 迁移状态页的目标入口随目标改键，保证"打开迁移后的预览"仍指向实际文件
+      // The status page's target entry is rekeyed with the target so "open the migrated preview" still points at the actual file
       for (const other of this.panels.values()) {
         if (other.migratedTo === oldKey) other.migratedTo = newKey;
       }
@@ -389,24 +389,24 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 保存事件（SPEC-LIFE-02 / 03 / 05）：未保存文档首次保存接续原预览；已有文件另存为不迁移绑定。 */
+  /** Save event (SPEC-LIFE-02 / 03 / 05): the first save of an unsaved document continues the original preview; save-as of an existing file does not migrate the binding. */
   notifyDocumentSaved(document: vscode.TextDocument): void {
     const newKey = document.uri.toString();
     for (const entry of [...this.panels.values()]) {
       if (entry.document !== document || entry.uri === newKey || entry.sourceState === 'migrated') continue;
       if (entry.uri.startsWith('untitled:')) {
-        // 首次保存：同一 TextDocument 对象 URI 原地更新，视为同一练习接续（SPEC-LIFE-03）
+        // First save: the same TextDocument object has its URI updated in place, treated as the same practice continuing (SPEC-LIFE-03)
         void this.continueBinding(entry, document.uri);
       } else {
-        // 另存为：原预览继续绑定原文件，不追随新路径（SPEC-LIFE-05）
+        // Save as: the original preview stays bound to the original file and does not follow the new path (SPEC-LIFE-05)
         void this.reopenBinding(entry);
       }
     }
   }
 
   /**
-   * 关闭事件（SPEC-LIFE-02 / 06）：未保存文档真正放弃转入来源不可用（来源文档已不存在）；
-   * 文件类按磁盘核验——盘上内容可能与最后推送（含未保存修改）不同，以磁盘为准（SPEC-LIFE-05）。
+   * Close event (SPEC-LIFE-02 / 06): a truly discarded unsaved document enters source-unavailable (the source document no longer exists);
+   * file documents are re-verified against disk - disk content may differ from the last push (which included unsaved edits), and disk wins (SPEC-LIFE-05).
    */
   notifyDocumentClosed(document: vscode.TextDocument): void {
     for (const entry of this.panels.values()) {
@@ -419,7 +419,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 源码光标变化（SPEC-PLAY-11）：属于某预览的绑定文档时推送查阅标记位置；光标属于其他曲目时清除各预览的标记。 */
+  /** Source cursor change (SPEC-PLAY-11): when it belongs to a preview's bound document push the inspection marker position; when the cursor belongs to another tune clear every preview's marker. */
   notifySelectionChanged(editor: vscode.TextEditor): void {
     const uri = editor.document.uri.toString();
     const entry = this.panels.get(uri);
@@ -427,13 +427,13 @@ export class PreviewPanelManager implements vscode.Disposable {
       this.sendCursor(entry, editor.document.offsetAt(editor.selection.active));
       return;
     }
-    // 不自动切曲、不套用当前曲目的映射（SPEC-PLAY-11）
+    // No automatic tune switching and no reuse of the current tune's mapping (SPEC-PLAY-11)
     for (const other of this.panels.values()) {
       this.sendCursor(other, null);
     }
   }
 
-  /** 推送查阅标记位置（SPEC-PLAY-11）：停用窗口内只记录、不应用，渲染完成后补发最新位置；只读状态页不推送。 */
+  /** Push the inspection marker position (SPEC-PLAY-11): inside the suspension window only record it, and re-send the latest position after rendering; read-only status pages get nothing. */
   private sendCursor(entry: PanelEntry, offset: number | null): void {
     entry.lastCursorOffset = offset ?? undefined;
     if (entry.suspend || !entry.renderedOnce || entry.context === undefined || this.isReadOnlyEntry(entry)) {
@@ -443,7 +443,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     void entry.panel.webview.postMessage(message);
   }
 
-  /** 立即推送待更新文档（若有）：起播命令前刷新，保证按最新版本映射（SPEC-PLAY-11 / 12）。 */
+  /** Push the pending document update immediately (if any): flushed before start commands so the mapping uses the latest version (SPEC-PLAY-11 / 12). */
   private flushDocumentUpdate(entry: PanelEntry): void {
     const timer = this.updateTimers.get(entry.uri);
     if (timer !== undefined) {
@@ -457,7 +457,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 只读来源状态（SPEC-LIFE-04 / 06）：迁移状态页与来源不可用页不参与播放、定位、设置修改与导出。 */
+  /** Read-only source state (SPEC-LIFE-04 / 06): migration status pages and source-unavailable pages take no part in playback, locating, settings changes or exports. */
   private isReadOnlyEntry(entry: PanelEntry): boolean {
     return entry.sourceState === 'migrated' || entry.sourceState === 'unavailable';
   }
@@ -470,7 +470,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 显式重新预览（SPEC-LIFE-07）：清除只读来源状态并交还常规推送路径；内容推送由调用方完成。 */
+  /** Explicit re-preview (SPEC-LIFE-07): clears the read-only source state and hands back to the regular push path; the content push is done by the caller. */
   private resumeBinding(entry: PanelEntry): void {
     if (entry.sourceState === undefined) return;
     entry.sourceState = undefined;
@@ -479,9 +479,9 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 接续绑定（SPEC-LIFE-03 / 04）：宿主已可靠确认新旧路径为同一文件（重命名对 / 首次保存的对象身份）。
-   * 先暂停并取消待起播、未提交更新与旧异步核验，再重新核验内容：内容未变时只更新身份（保留暂停位置、
-   * 设置与映射），变化或从来源不可用恢复时按常规换版推送并归零；目标已有面板时目标优先（SPEC-LIFE-04）。
+   * Continue the binding (SPEC-LIFE-03 / 04): the host has reliably confirmed the old and new paths are the same file (rename pair / object identity on first save).
+   * Pause first and cancel pending starts, uncommitted updates and old async checks, then re-verify the content: unchanged content only updates the identity (keeping paused position,
+   * settings and mapping); changed content or recovery from source-unavailable takes the usual version push with reset; when the target already has a panel the target wins (SPEC-LIFE-04).
    */
   private async continueBinding(entry: PanelEntry, newUri: vscode.Uri): Promise<void> {
     const oldKey = entry.uri;
@@ -493,7 +493,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     entry.pendingChange = undefined;
     this.clearSourceCheck(oldKey);
     const conflict = this.panels.get(newKey);
-    // 目标已有预览或设置记录时目标优先（SPEC-LIFE-04）：来源保留为只读迁移页
+    // When the target already has a preview or a settings record the target wins (SPEC-LIFE-04): the source stays as a read-only migration page
     if (conflict !== undefined || this.practiceStore.read(newKey) !== undefined) {
       this.markMigrated(entry, newKey);
       if (conflict !== undefined) this.refreshTargetBinding(conflict, newUri);
@@ -509,18 +509,18 @@ export class PreviewPanelManager implements vscode.Disposable {
       entry.migratedTo = undefined;
     }
     this.rekeyEntry(entry, newKey);
-    // 持久记录随绑定迁移（SPEC-LIFE-03、SET-08）：目标无记录时复制，来源不删除
+    // Persistent records migrate with the binding (SPEC-LIFE-03, SET-08): copied when the target has none, the source is not deleted
     this.practiceStore.migrate(entry.practiceState, newKey);
     const document = await this.documentForUri(newUri);
     if (this.panels.get(newKey) !== entry) return;
     if (document === undefined) {
-      // 目标暂不可读（极罕见竞态）：按来源不可用处理，等待文件事件复核
+      // Target temporarily unreadable (very rare race): treat as source-unavailable and wait for the file event re-check
       this.enterUnavailable(entry);
       return;
     }
     const abc = document.getText();
     if (!wasUnavailable && entry.renderedOnce && entry.lastPushedAbc === abc) {
-      // 同一练习、内容未变：保留暂停位置、设置与映射，只更新身份标识与显示路径（SPEC-LIFE-03）
+      // Same practice, unchanged content: keep paused position, settings and mapping, update only the identity and display path (SPEC-LIFE-03)
       entry.document = document;
       entry.panel.title = panelTitle(document);
       void entry.panel.webview.postMessage(this.continuedMessage(entry, document));
@@ -530,8 +530,8 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 身份更新消息（SPEC-LIFE-03）：内容与版本沿用最近一次推送（webview 据此保留位置），
-   * 只替换来源标识与显示路径；continued 标记本次推送属于同一练习的可靠迁移。
+   * Identity update message (SPEC-LIFE-03): content and version are carried over from the latest push (the webview keeps its position from them),
+   * only the source identity and display path are replaced; `continued` marks this push as a reliable migration of the same practice.
    */
   private continuedMessage(entry: PanelEntry, document: vscode.TextDocument): DocumentMessage {
     return {
@@ -547,7 +547,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     };
   }
 
-  /** 另存为后的原绑定复核（SPEC-LIFE-05）：原预览继续绑定原文件；无缓冲区或内容变化时重新获取并按待更新规则推送。 */
+  /** Re-check of the original binding after save-as (SPEC-LIFE-05): the original preview stays bound to the original file; without a buffer or on content change it is re-fetched and pushed under the pending-update rules. */
   private async reopenBinding(entry: PanelEntry): Promise<void> {
     const key = entry.uri;
     const current = this.findDocument(key);
@@ -578,7 +578,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 迁移冲突（SPEC-LIFE-04）：来源面板保留为只读"文件已迁移"状态页；旧路径不再观察、不自动续播。 */
+  /** Migration conflict (SPEC-LIFE-04): the source panel stays as a read-only "file moved" status page; the old path is no longer watched and playback is not resumed. */
   private markMigrated(entry: PanelEntry, newKey: string): void {
     entry.pendingRequest = undefined;
     this.clearUpdateTimer(entry.uri);
@@ -592,13 +592,13 @@ export class PreviewPanelManager implements vscode.Disposable {
     entry.migratedTo = newKey;
     entry.watcher?.dispose();
     entry.watcher = undefined;
-    // 旧绑定已终止（SPEC-STATE-06）：来源页不再保留可进入 Problems 的旧诊断
+    // The old binding has ended (SPEC-STATE-06): the source page keeps no old diagnostics that could lead into Problems
     this.clearEntryDiagnostics(entry);
     this.postPlayback(entry, 'pause');
     this.postSourceState(entry, 'migrated');
   }
 
-  /** 目标冲突时目标面板的重新核验（SPEC-LIFE-04）：按实际文档推送最新内容，不自动播放、不抢焦点。 */
+  /** Re-verification of the target panel on a target conflict (SPEC-LIFE-04): push the latest content from the actual document, without auto-playing or stealing focus. */
   private refreshTargetBinding(entry: PanelEntry, uri: vscode.Uri): void {
     if (this.isReadOnlyEntry(entry)) return;
     const document = vscode.workspace.textDocuments.find(
@@ -618,8 +618,8 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 来源不可用（SPEC-LIFE-06）：保留预览页为只读参考，停音并取消起播与未提交更新；
-   * 专用观察器保留，等待原路径重新可读后恢复（SPEC-LIFE-07）。
+   * Source unavailable (SPEC-LIFE-06): keep the preview page as a read-only reference, silence it and cancel pending starts and uncommitted updates;
+   * the dedicated watcher is kept so the preview recovers once the original path is readable again (SPEC-LIFE-07).
    */
   private enterUnavailable(entry: PanelEntry): void {
     if (entry.sourceState === 'unavailable') return;
@@ -632,13 +632,13 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.syncLinkedDecorations();
     entry.sourceState = 'unavailable';
     entry.migratedTo = undefined;
-    // 旧绑定已失效（SPEC-STATE-06）：清除该文档的问题条目
+    // The old binding is void (SPEC-STATE-06): clear this document's Problems entries
     this.clearEntryDiagnostics(entry);
     this.postPlayback(entry, 'stop');
     this.postSourceState(entry, 'unavailable');
   }
 
-  /** 来源状态消息（SPEC-LIFE-04 / 06 / 07）：只带状态与展示文本，文件路径不出现在协议里。 */
+  /** Source status message (SPEC-LIFE-04 / 06 / 07): carries only the status and display text; file paths never appear in the protocol. */
   private postSourceState(entry: PanelEntry, state: SourceStateMessage['state']): void {
     let detail = '';
     if (state !== 'available') {
@@ -650,8 +650,8 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 练习记录提交（SPEC-SET-03 ~ 08）：只接受当前文档真实且唯一的 X: 曲目；
-   * 与已有记录合并（未提及的旧曲目保留），未保存文档只留会话内，重复上报不触发写入。
+   * Practice record commit (SPEC-SET-03 ~ 08): accepts only X: tunes that really exist and are unique in the current document;
+   * merged with the existing record (unmentioned old tunes are kept), unsaved documents stay in the session only, repeated reports do not trigger writes.
    */
   private applyPracticeState(entry: PanelEntry, message: WebviewPracticeStateMessage): void {
     const catalog = createTuneCatalog(entry.lastPushedAbc ?? '');
@@ -669,19 +669,19 @@ export class PreviewPanelManager implements vscode.Disposable {
     const hasContent = incoming.tunes.length > 0 ||
       incoming.ui.keyboardCollapsed !== defaults.keyboardCollapsed ||
       incoming.ui.keyboardMode !== defaults.keyboardMode;
-    // 无记录且仍是全默认：不创建空记录（打开文件本身不算一次练习设置）
+    // No record and still all defaults: do not create an empty record (opening a file is not a practice setting)
     if (base === undefined && !hasContent) return;
     const merged = mergePracticeIfChanged(base, incoming);
     entry.practiceState = merged;
     if (merged === base) return;
-    // 未保存新文档仅保留会话内记录（SPEC-SET-02）：首次保存时随绑定迁移落盘
+    // Unsaved new documents keep the record in the session only (SPEC-SET-02): persisted with the binding on first save
     if (entry.document.isUntitled) return;
     this.practiceStore.save(entry.uri, merged);
   }
 
   /**
-   * 发布解析诊断（SPEC-STATE-06）：只接受与最近推送版本、修订一致的可靠位置；
-   * 晚到 / 已被取代的渲染结果不得恢复旧错误；空列表在 webview 清理后同步清除。
+   * Publish parse diagnostics (SPEC-STATE-06): accept only reliable positions matching the latest pushed version and revision;
+   * late / superseded render results must not restore old errors; an empty list clears in sync with the webview's cleanup.
    */
   private applyDiagnostics(entry: PanelEntry, message: WebviewDiagnosticsMessage): void {
     if (message.context.version !== entry.version || message.context.revision !== entry.revision) return;
@@ -701,7 +701,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.publishDiagnostics(entry);
   }
 
-  /** 诊断按文档键控（SPEC-STATE-06）：空列表即清除，不保留已解决的诊断。 */
+  /** Diagnostics keyed by document (SPEC-STATE-06): an empty list clears; resolved diagnostics are not kept. */
   private publishDiagnostics(entry: PanelEntry): void {
     const uri = vscode.Uri.parse(entry.uri);
     if (entry.diagnostics.length === 0) this.diagnostics.delete(uri);
@@ -714,7 +714,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.diagnostics.delete(vscode.Uri.parse(entry.uri));
   }
 
-  /** 绑定文件的专用观察器（SPEC-LIFE-08）：仅文件类 URI 建立；改键 / 迁移 / 释放时重建或 dispose。 */
+  /** Dedicated watcher for the bound file (SPEC-LIFE-08): created only for file URIs; rebuilt or disposed on rekey / migration / release. */
   private attachWatcher(entry: PanelEntry): void {
     entry.watcher?.dispose();
     entry.watcher = undefined;
@@ -735,7 +735,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     entry.watcher = watcher;
   }
 
-  /** 文件事件防抖（SPEC-LIFE-08）：合并短暂删除再创建与原子替换的连续通知，世代序号作废过期核验。 */
+  /** File event debounce (SPEC-LIFE-08): merges the back-to-back notifications of brief delete-then-create and atomic replace; generation numbers invalidate stale checks. */
   private scheduleSourceCheck(key: string): void {
     const generation = (this.sourceGenerations.get(key) ?? 0) + 1;
     this.sourceGenerations.set(key, generation);
@@ -750,7 +750,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     );
   }
 
-  /** 作废某键的待核验与在途核验（换键 / 迁移 / 关闭时调用）。 */
+  /** Invalidate a key's pending and in-flight checks (called on rekey / migration / close). */
   private clearSourceCheck(key: string): void {
     const timer = this.sourceTimers.get(key);
     if (timer !== undefined) {
@@ -761,9 +761,9 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 文件事件核验（SPEC-LIFE-06 / 07 / 08）：复核绑定目标是否仍可读；
-   * 不可读且无可用编辑器缓冲区（插件缓存的旧正文不算）时进入来源不可用，有缓冲区则继续预览并提示磁盘状态；
-   * 重新可读时重新获取内容，应用后归零、不自动播放。
+   * File event verification (SPEC-LIFE-06 / 07 / 08): re-checks whether the bound target is still readable;
+   * unreadable without a usable editor buffer (the extension's cached old text does not count) enters source-unavailable, with a buffer the preview continues and only the disk state is reported;
+   * when readable again the content is re-fetched, applied with reset, and not auto-played.
    */
   private async checkSource(key: string, generation: number): Promise<void> {
     if (this.sourceGenerations.get(key) !== generation) return;
@@ -774,7 +774,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
     if (!readable) {
       if (this.findDocument(key) !== undefined) {
-        // 缓冲区仍可用（SPEC-LIFE-06）：继续按该文档预览，只提示磁盘状态，不重复发送
+        // The buffer is still usable (SPEC-LIFE-06): keep previewing that document, only report the disk state, do not send twice
         if (entry.sourceState !== 'disk-missing') {
           entry.sourceState = 'disk-missing';
           entry.migratedTo = undefined;
@@ -786,10 +786,10 @@ export class PreviewPanelManager implements vscode.Disposable {
       return;
     }
     if (entry.sourceState === 'unavailable') {
-      // 来源恢复（SPEC-LIFE-07）：重新获取并校验当前内容，应用后归零，不恢复旧起播或旧映射
+      // Source recovered (SPEC-LIFE-07): re-fetch and validate the current content, apply with reset, do not restore old start requests or old mappings
       const document = await this.documentForUri(uri);
       if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
-      if (document === undefined) return; // 读取失败：保持现状，等待下一次事件
+      if (document === undefined) return; // Read failed: keep the current state and wait for the next event
       entry.sourceState = undefined;
       entry.migratedTo = undefined;
       entry.suspend = true;
@@ -800,12 +800,12 @@ export class PreviewPanelManager implements vscode.Disposable {
       return;
     }
     if (entry.sourceState === 'disk-missing') {
-      // 磁盘恢复：清除提示（内容仍以编辑器缓冲区为准）
+      // Disk recovered: clear the notice (content still follows the editor buffer)
       entry.sourceState = undefined;
       this.postSourceState(entry, 'available');
     }
-    if (this.findDocument(key) !== undefined) return; // 缓冲区存在：内容变化经 onDidChangeTextDocument 推送
-    // 无缓冲区（源码标签已关闭 / 外部原子替换，SPEC-LIFE-05 / 08）：与最近推送比对，按差异推送新版本
+    if (this.findDocument(key) !== undefined) return; // A buffer exists: content changes arrive via onDidChangeTextDocument
+    // No buffer (source tab closed / external atomic replace, SPEC-LIFE-05 / 08): compare with the latest push and push a new version on difference
     const text = await readTextFile(uri);
     if (this.sourceGenerations.get(key) !== generation || this.panels.get(key) !== entry) return;
     if (text === undefined || text === entry.lastPushedAbc) return;
@@ -819,7 +819,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.pushDocument(entry, document);
   }
 
-  /** 迁移状态页的"打开迁移后的预览"入口（SPEC-LIFE-04）：只按宿主记录的目标工作，不接受 webview 路径。 */
+  /** The migration status page's "open the migrated preview" entry (SPEC-LIFE-04): works only from the host's own recorded target, never from a webview path. */
   private revealMigratedTarget(entry: PanelEntry): void {
     const targetKey = entry.migratedTo;
     if (targetKey === undefined) return;
@@ -837,12 +837,12 @@ export class PreviewPanelManager implements vscode.Disposable {
     });
   }
 
-  /** 按 URI 找当前打开的文档（含未保存缓冲区）；找不到返回 undefined。 */
+  /** Find the currently open document by URI (including unsaved buffers); returns undefined when none. */
   private findDocument(key: string): vscode.TextDocument | undefined {
     return vscode.workspace.textDocuments.find((document) => document.uri.toString() === key);
   }
 
-  /** 按 URI 获取文档：优先当前缓冲区，其次从磁盘 / 提供者加载（不显示编辑器）。 */
+  /** Get a document by URI: the current buffer first, otherwise loaded from disk / provider (without showing an editor). */
   private async documentForUri(uri: vscode.Uri): Promise<vscode.TextDocument | undefined> {
     const open = this.findDocument(uri.toString());
     if (open !== undefined) return open;
@@ -853,7 +853,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
   }
 
-  /** 换键（SPEC-LIFE-03）：面板仍绑定同一练习，仅更新身份标识；观察器与诊断随键迁移。 */
+  /** Rekey (SPEC-LIFE-03): the panel stays bound to the same practice, only the identity is updated; watcher and diagnostics migrate with the key. */
   private rekeyEntry(entry: PanelEntry, newKey: string): void {
     const oldKey = entry.uri;
     this.panels.delete(entry.uri);
@@ -861,7 +861,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     entry.uri = newKey;
     this.panels.set(newKey, entry);
     this.attachWatcher(entry);
-    // 内容未变的可靠迁移不重渲染（SPEC-LIFE-03）：Problems 条目跟随同一练习的新身份
+    // A reliable migration with unchanged content does not re-render (SPEC-LIFE-03): Problems entries follow the same practice's new identity
     if (entry.diagnostics.length > 0) {
       this.diagnostics.delete(vscode.Uri.parse(oldKey));
       this.publishDiagnostics(entry);
@@ -875,9 +875,9 @@ export class PreviewPanelManager implements vscode.Disposable {
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
-        // 隐藏时保留 webview 上下文：隐藏按暂停语义处理、恢复后可继续，不重新准备音频（SPEC-PLAY-02）
+        // Keep the webview context when hidden: hiding has pause semantics and resumes afterwards without re-preparing audio (SPEC-PLAY-02)
         retainContextWhenHidden: true,
-        // 只允许扩展自有目录作为 webview 资源来源（SPEC-ENV-05）
+        // Only the extension's own directory may serve webview resources (SPEC-ENV-05)
         localResourceRoots: [
           vscode.Uri.joinPath(this.extensionUri, 'out'),
           vscode.Uri.joinPath(this.extensionUri, 'media'),
@@ -892,7 +892,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       lastPushedAbc: undefined,
       renderedOnce: false,
       pendingRequest: request,
-      // 首次渲染完成前不应用联动（SPEC-PLAY-11）
+      // No linkage is applied before the first render completes (SPEC-PLAY-11)
       suspend: true,
       lastCursorOffset: undefined,
       pendingChange: undefined,
@@ -916,15 +916,15 @@ export class PreviewPanelManager implements vscode.Disposable {
     this.attachWatcher(entry);
     panel.webview.html = this.renderHtml(panel.webview);
     if (request !== undefined) {
-      // 播放类命令按需打开预览时不抢源码焦点（SPEC-CMD-07）
+      // Playback commands opening the preview on demand do not steal source focus (SPEC-CMD-07)
       panel.reveal(undefined, true);
     }
     panel.onDidDispose(
       () => {
-        // 防止迟到的 dispose 回调误删同文件的新面板
+        // Guard against a late dispose callback removing a newer panel for the same file
         if (this.panels.get(entry.uri) === entry) {
           this.panels.delete(entry.uri);
-          // 面板关闭后轮廓标记与解析诊断一并清除（SPEC-PLAY-11 / STATE-06）
+          // Outline decoration and parse diagnostics are cleared together when the panel closes (SPEC-PLAY-11 / STATE-06)
           this.syncLinkedDecorations();
           this.clearEntryDiagnostics(entry);
           this.clearSourceCheck(entry.uri);
@@ -945,14 +945,14 @@ export class PreviewPanelManager implements vscode.Disposable {
         if (this.panels.get(entry.uri) !== entry || panel.visible) {
           return;
         }
-        // 面板隐藏按暂停处理（SPEC-PLAY-02）；待起播请求随隐藏取消（SPEC-CMD-07）
+        // Hiding the panel is treated as pause (SPEC-PLAY-02); pending start requests are cancelled on hide (SPEC-CMD-07)
         entry.pendingRequest = undefined;
         this.postPlayback(entry, 'pause');
       },
       undefined,
       this.disposables,
     );
-    // webview 就绪握手后推送内容；其余消息不信任其来源，按类型与版本校验（SPEC-ENV-04）
+    // Push content after the webview ready handshake; other messages are untrusted and validated by type and version (SPEC-ENV-04)
     panel.webview.onDidReceiveMessage(
       (message: unknown) => {
         const parsed = parseWebviewMessage(message);
@@ -972,7 +972,7 @@ export class PreviewPanelManager implements vscode.Disposable {
           entry.suspend = true;
           const current = this.findDocument(entry.uri) ?? entry.document;
           this.pushDocument(entry, current);
-          // 只读来源页：补发状态标记，参考谱保持在状态页展示（SPEC-LIFE-04 / 06）
+          // Read-only source page: re-send the status marker; the reference score stays displayed on the status page (SPEC-LIFE-04 / 06)
           if (entry.sourceState !== undefined) this.postSourceState(entry, entry.sourceState);
           return;
         }
@@ -985,7 +985,7 @@ export class PreviewPanelManager implements vscode.Disposable {
           return;
         }
         if (parsed.type === 'show-problems') {
-          // "查看问题"只打开宿主 Problems（SPEC-STATE-06）：不自动打开、不改变绑定与播放
+                  // "View problems" only opens the host Problems view (SPEC-STATE-06): never automatic, does not change binding or playback
           if (parsed.viewId === entry.viewId && !this.isReadOnlyEntry(entry)) {
             void vscode.commands.executeCommand('workbench.action.problems.focus');
           }
@@ -993,7 +993,7 @@ export class PreviewPanelManager implements vscode.Disposable {
         }
         const context = parsed.context;
         if (context.viewId !== entry.viewId) return;
-        // 练习记录提交（SPEC-SET-03 ~ 08）：按最近推送的版本与修订校验，晚到结果不覆盖新记录
+        // Practice record commit (SPEC-SET-03 ~ 08): validated against the latest pushed version and revision; late results do not overwrite newer records
         if (parsed.type === 'practice-state' || parsed.type === 'reset-practice') {
           if (context.version !== entry.version || context.revision !== entry.revision) return;
           if (this.isReadOnlyEntry(entry)) return;
@@ -1021,7 +1021,7 @@ export class PreviewPanelManager implements vscode.Disposable {
         if (parsed.type === 'select-tune') {
           if (parsed.requestId <= entry.lastSelectionRequest) return;
           entry.lastSelectionRequest = parsed.requestId;
-          // 只读状态页不接受切曲（SPEC-LIFE-04 / 06）
+          // Read-only status pages accept no tune switching (SPEC-LIFE-04 / 06)
           if (this.isReadOnlyEntry(entry)) return;
           entry.pendingRequest = undefined;
           this.flushDocumentUpdate(entry);
@@ -1039,10 +1039,10 @@ export class PreviewPanelManager implements vscode.Disposable {
           return;
         }
         if (parsed.type === 'play-from-selection-request') {
-          // 预览控制区"从此处播放"（SPEC-PLAY-12）：与命令共用路径（先刷新待更新文档再映射）
+          // "Play from here" in the preview controls (SPEC-PLAY-12): shares the command path (flush pending document updates, then map)
           if (parsed.requestId <= entry.lastTargetRequest) return;
           entry.lastTargetRequest = parsed.requestId;
-          // 只读状态页不接受起播（SPEC-LIFE-04 / 06）
+          // Read-only status pages accept no playback start (SPEC-LIFE-04 / 06)
           if (this.isReadOnlyEntry(entry)) return;
           this.requestPlayFromSelection(entry.document, parsed.requestId);
           return;
@@ -1053,7 +1053,7 @@ export class PreviewPanelManager implements vscode.Disposable {
         if (parsed.type === 'reveal-range') {
           if (parsed.end > entry.document.getText().length) return;
           if (entry.suspend) {
-            // 停用窗口：忽略旧谱面→旧源码的定位（SPEC-PLAY-11）
+            // Suspension window: ignore old score -> old source locating (SPEC-PLAY-11)
             return;
           }
           if (parsed.requestId <= entry.lastRevealRequest) return;
@@ -1067,7 +1067,7 @@ export class PreviewPanelManager implements vscode.Disposable {
         }
         if (parsed.type === 'source-highlight') {
           if (entry.suspend) {
-            // 停用窗口：变化时已清除高亮，此处不再应用旧映射（SPEC-PLAY-11）
+            // Suspension window: highlighting was cleared on change, do not reapply the old mapping here (SPEC-PLAY-11)
             return;
           }
           this.applySourceHighlight(entry, parsed.ranges);
@@ -1075,7 +1075,7 @@ export class PreviewPanelManager implements vscode.Disposable {
         }
         if (parsed.type === 'target-ranges') {
           if (entry.suspend) {
-            // 停用窗口：变化时已清除轮廓，此处不再应用旧映射（SPEC-PLAY-11）
+            // Suspension window: the outline was cleared on change, do not reapply the old mapping here (SPEC-PLAY-11)
             return;
           }
           entry.targetRanges = parsed.ranges;
@@ -1090,14 +1090,14 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 渲染结果：版本不符丢弃；解除联动停用并补发停用期间的最新光标；
-   * 仍有效的待起播请求在首次渲染成功后执行（SPEC-CMD-07 / 09、PLAY-11）。
+   * Render result: version mismatches are dropped; lifts the linkage suspension and re-sends the latest cursor recorded meanwhile;
+   * a still-valid pending start request runs after the first successful render (SPEC-CMD-07 / 09, PLAY-11).
    */
   private handleRendered(entry: PanelEntry, message: WebviewRenderedMessage): void {
     if (message.context.version !== entry.version || message.context.revision !== entry.revision) return;
     entry.renderedOnce = true;
     entry.appliedRevision = entry.revision;
-    // 版本基准取最近一次推送（entry.version）：来源标签关闭后按 URI 重开等场景下 entry.document 可能是重开的对象
+    // The version baseline is the latest push (entry.version): after reopening by URI following a closed source tab, entry.document may be the reopened object
     entry.suspend = !message.linkable || entry.pendingChange !== undefined || entry.version !== message.context.version || this.isReadOnlyEntry(entry);
     if (entry.lastCursorOffset !== undefined) this.sendCursor(entry, entry.lastCursorOffset);
     const request = entry.pendingRequest;
@@ -1107,13 +1107,13 @@ export class PreviewPanelManager implements vscode.Disposable {
       if (message.ok && message.linkable) this.postPlayback(entry, 'toggle');
       return;
     }
-    // 源码目标可能是另一首，不能被当前曲目渲染失败阻断。
+    // The source target may be another tune and must not be blocked by the current tune's render failure.
     if (request.version !== entry.version) return;
     const playFrom: PlayFromCursorMessage = { type: 'play-from-cursor', context: message.context, requestId: ++entry.requestId, offset: request.offset };
     void entry.panel.webview.postMessage(playFrom);
   }
 
-  /** 同一窗口内只允许一处预览发声：任一面板起播时暂停其他面板（SPEC-PLAY-01）。 */
+  /** Only one preview per window may produce sound: starting any panel pauses the others (SPEC-PLAY-01). */
   private handlePlaybackState(entry: PanelEntry, state: WebviewPlaybackStateMessage['state']): void {
     entry.phase = state;
     if (state !== 'playing') {
@@ -1135,16 +1135,16 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 状态页"转到源码编辑"入口（SPEC-STATE-05 / CMD-12）：与命令共用打开路径
-   * （含来源标签关闭后的按 URI 重新打开）；目标取面板绑定，不接受 webview 提供的路径。
+   * The status page's "go to source" entry (SPEC-STATE-05 / CMD-12): shares the command's open path
+   * (including reopening by URI after the source tab closed); the target is the panel binding, never a webview-supplied path.
    */
   private revealSource(entry: PanelEntry): void {
     void this.requestGoToSource(entry.document);
   }
 
   /**
-   * 点击谱面音符的源码定位（SPEC-PLAY-11）：设置选区并滚动可见，焦点留在预览、不改变播放位置；
-   * 源码不可见时显示但不抢焦点（轮廓标记由 webview 的目标区间回传驱动，不经过这里）。
+   * Locate source from a clicked score note (SPEC-PLAY-11): set the selection and scroll into view, focus stays in the preview and the playback position is unchanged;
+   * an invisible source is shown without stealing focus (the outline decoration is driven by the webview's target range report, not from here).
    */
   private revealRange(entry: PanelEntry, message: WebviewRevealRangeMessage): void {
     const document = vscode.workspace.textDocuments.find(
@@ -1153,7 +1153,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     if (document === undefined) {
       return;
     }
-    // active 端取音符起点：选区变化回传的光标偏移据此落在同一音符上（SPEC-PLAY-11）
+    // The active end takes the note start: the cursor offset reported back from the selection change lands on the same note (SPEC-PLAY-11)
     const selection = new vscode.Selection(
       document.positionAt(message.end),
       document.positionAt(message.start),
@@ -1169,7 +1169,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     void vscode.window.showTextDocument(document, {
       viewColumn: vscode.ViewColumn.One,
       preview: false,
-      preserveFocus: true, // 点击谱面不转移焦点（SPEC-PLAY-11）
+      preserveFocus: true, // Clicking the score does not move focus (SPEC-PLAY-11)
     }).then((opened) => {
       if (this.panels.get(entry.uri) !== entry || entry.suspend || entry.lastRevealRequest !== message.requestId || !sameContext(entry.context, message.context) || opened.document.version !== message.context.version) return;
       opened.selection = selection;
@@ -1177,12 +1177,12 @@ export class PreviewPanelManager implements vscode.Disposable {
     }, (error: unknown) => this.reportSourceUnavailable(error));
   }
 
-  /** 联动不可用的原因说明（SPEC-PLAY-11 / 12）：不静默失败，不悄悄从头播放。 */
+  /** Explanation when linkage is unavailable (SPEC-PLAY-11 / 12): no silent failure, no quietly playing from the beginning. */
   private showLinkageUnavailable(reason: LinkageUnavailableReason): void {
     void vscode.window.showInformationMessage(linkageUnavailableText(reason));
   }
 
-  /** 源码播放高亮（SPEC-PLAY-11）：只对可见编辑器设装饰，不滚动、不移动光标、不因播放打开已关闭的源码页。 */
+  /** Source playback highlighting (SPEC-PLAY-11): decorates visible editors only, without scrolling, moving the cursor or opening a closed source tab for playback. */
   private applySourceHighlight(entry: PanelEntry, ranges: SourceHighlightRange[]): void {
     const editor = vscode.window.visibleTextEditors.find(
       (candidate) => candidate.document.uri.toString() === entry.uri,
@@ -1197,7 +1197,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     editor.setDecorations(this.sourceHighlight, decorations);
   }
 
-  /** 清除源码播放高亮（SPEC-PLAY-11）：文档变化或换版时立即停用旧映射的显示。 */
+  /** Clear source playback highlighting (SPEC-PLAY-11): the old mapping's display is suspended immediately on document change or version switch. */
   private clearSourceHighlight(entry: PanelEntry): void {
     for (const editor of vscode.window.visibleTextEditors) {
       if (editor.document.uri.toString() === entry.uri) {
@@ -1207,8 +1207,8 @@ export class PreviewPanelManager implements vscode.Disposable {
   }
 
   /**
-   * 按各文档当前目标音符的源码区间同步轮廓标记（SPEC-PLAY-11）：只作用于可见编辑器，
-   * 无区间（未命中 / 目标已清除 / 内容已变化 / 面板已关闭）时清除。
+   * Sync the outline decoration from each document's current target note range (SPEC-PLAY-11): affects visible editors only,
+   * cleared when there is no range (no hit / target cleared / content changed / panel closed).
    */
   private syncLinkedDecorations(): void {
     for (const editor of vscode.window.visibleTextEditors) {
@@ -1241,26 +1241,26 @@ export class PreviewPanelManager implements vscode.Disposable {
 
   private pushDocument(entry: PanelEntry, document: vscode.TextDocument, continued = false): void {
     const message = this.documentMessage(entry, document);
-    // 已保存文件的练习记录只随视图首次推送（SPEC-SET-02）：恢复后由 webview 全量回传
+    // A saved file's practice record is pushed only with the view's first push (SPEC-SET-02): after restore the webview reports the full record back
     if (!entry.renderedOnce && entry.practiceState !== undefined) message.practice = entry.practiceState;
     const request = entry.pendingRequest;
     if (!entry.renderedOnce && request?.kind === 'play-from-cursor') {
       entry.pendingRequest = undefined;
       if (request.version === document.version) message.initialRequest = { requestId: ++entry.requestId, offset: request.offset };
     }
-    // 可靠迁移的换版推送（SPEC-LIFE-03）：标记同一练习的新身份，webview 据此接续选曲与设置记录
+    // Version push of a reliable migration (SPEC-LIFE-03): marks the same practice's new identity so the webview continues tune selection and settings records
     if (continued) message.continued = true;
     void entry.panel.webview.postMessage(message);
   }
 
-  /** 生成 webview HTML：CSP 只放行 nonce 自有脚本与扩展资源，连接仅限扩展自有资源（SPEC-ENV-03）。 */
+  /** Build the webview HTML: the CSP allows only nonce'd own scripts and extension resources, connections only to the extension's own resources (SPEC-ENV-03). */
   private renderHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'out', 'webview.js'));
-    // codicon 图标字体经 asWebviewUri 交给 webview（构建拷贝到 out/codicons/，SPEC-ENV-05）：图标按钮字形与旋转动画
+    // The codicon icon font is handed to the webview via asWebviewUri (copied to out/codicons/ at build time, SPEC-ENV-05): icon button glyphs and the spin animation
     const codiconUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'out', 'codicons', 'codicon.css'),
     );
-    // 本地钢琴音色目录经 asWebviewUri 交给 webview（SPEC-ENV-05 / 07），abcjs 默认远程地址不得被触发
+    // The local piano soundfont directory is handed to the webview via asWebviewUri (SPEC-ENV-05 / 07); abcjs's default remote URL must never be hit
     const soundfontUrl = webview
       .asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'soundfonts', 'FluidR3_GM'))
       .toString();
@@ -1271,7 +1271,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `font-src ${webview.cspSource}`,
       `img-src ${webview.cspSource} data:`,
-      // 音色文件经 XHR 读取，放行扩展自有资源（连接目标不超出 cspSource，SPEC-ENV-03）
+      // Soundfont files are read via XHR; allow the extension's own resources (connection targets stay within cspSource, SPEC-ENV-03)
       `connect-src ${webview.cspSource}`,
     ].join('; ');
 
@@ -1290,15 +1290,15 @@ export class PreviewPanelManager implements vscode.Disposable {
       flex-direction: column;
       min-height: 100vh;
       margin: 0;
-      /* 预览无全局横滚需求：谱面按容器宽缩放、键盘内部横滚；兼作旧宽渲染溢出的防线 */
+      /* The preview has no global horizontal scroll: the score scales to the container width and the keyboard scrolls internally; also a guard against overflow from an older wide render */
       overflow-x: hidden;
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
     }
-    /* 顶栏（SPEC-PLAY-13）：播放控件粘在预览顶部，长谱滚动时保持可见可点；键盘贴底、谱面在两者之间滚动。
-       文件名与“尚未保存”标记不在此重复：预览标签标题已含（SPEC-CMD-06） */
+    /* Top bar (SPEC-PLAY-13): playback controls stick to the top of the preview and stay visible and clickable while a long score scrolls; the keyboard sticks to the bottom and the score scrolls between them.
+       The file name and "unsaved" marker are not repeated here: the preview tab title already has them (SPEC-CMD-06) */
     #topbar {
       flex: 0 0 auto;
       position: sticky;
@@ -1307,7 +1307,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       background: var(--vscode-editor-background);
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
-    /* SPEC-DOC-01：曲目独占一行；长列表内部滚动，不挤压原控制分组。 */
+    /* SPEC-DOC-01: the tune list owns a full row; a long list scrolls internally without squeezing the original control groups. */
     #tunes { position: relative; padding: 6px 12px 0; }
     #tunes[hidden], #tune-list[hidden] { display: none; }
     #tunes > button {
@@ -1331,7 +1331,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     #tune-list [role='option']:hover { background: var(--vscode-list-hoverBackground); }
     #tune-list [aria-disabled='true'] { color: var(--vscode-disabledForeground); cursor: default; }
     #progress[aria-disabled='true'] { opacity: .5; cursor: default; }
-    /* 控制区（SPEC-PLAY-13）：列间距走分组 margin-right（图标节奏需要精确值），仅保留行距 8px */
+    /* Controls (SPEC-PLAY-13): column spacing goes through per-group margin-right (the icon rhythm needs exact values), only the 8px row gap is kept */
     #controls {
       display: flex;
       flex-wrap: wrap;
@@ -1339,17 +1339,17 @@ export class PreviewPanelManager implements vscode.Disposable {
       row-gap: 8px;
       padding: 6px 12px;
     }
-    /* 稳定分组（SPEC-PLAY-13）：组内不换行、仅组间断行；默认组间距 12px */
+    /* Stable groups (SPEC-PLAY-13): no wrapping inside a group, only between groups; default group spacing 12px */
     .abcdesk-control-group { display: inline-flex; align-items: center; gap: 8px; }
     .abcdesk-control-group:not(:last-child) { margin-right: 12px; }
-    /* 图标节奏（SPEC-PLAY-13）：% ⟳ ⟲ ▶ ⏹ 墨迹间距统一 18px——速度组 → 传输组 2.4px、循环 → 播放 1.45px、
-       播放 → 停止 2.2px；组内两对间距不同（字形墨迹收缩各异），故逐对 margin 而非 gap；
-       数值由无头 Chrome 4 倍放大像素实测校准（四段均 18.00px），改动前先复测 */
+    /* Icon rhythm (SPEC-PLAY-13): % ⟳ ⟲ ▶ ⏹ with a uniform 18px ink gap - speed group -> transport group 2.4px, loop -> play 1.45px,
+       play -> stop 2.2px; the two pairs inside a group differ (glyph ink shrinks differently), hence per-pair margins rather than gap;
+       values calibrated by measuring headless Chrome at 4x zoom (all four segments 18.00px); re-measure before changing */
     #speed-group { margin-right: 2.4px; }
     #transport-group { gap: 0; }
     #transport-group #play { margin-left: 1.45px; }
     #transport-group #stop { margin-left: 2.2px; }
-    /* 谱面区：flex 拉伸把键盘 dock 顶到视口底边（短文档也贴底）；滚动仍走整页 */
+    /* Score area: flex stretch pushes the keyboard dock to the bottom edge of the viewport (even for short documents); scrolling still goes through the whole page */
     #score-region {
       flex: 1 1 auto;
     }
@@ -1363,16 +1363,16 @@ export class PreviewPanelManager implements vscode.Disposable {
       cursor: pointer;
     }
     #controls button:hover, #content-status button:hover, #follow-resume:hover { background: var(--vscode-button-hoverBackground); }
-    /* "从此处播放"（SPEC-PLAY-12）：禁用原因由包裹元素承载（禁用按钮自身不触发悬停提示） */
+    /* "Play from here" (SPEC-PLAY-12): the disabled reason is carried by the wrapper element (a disabled button does not trigger its own tooltip) */
     #play-from-here-wrap { display: inline-flex; }
     #controls button:disabled {
       opacity: 0.5;
       cursor: default;
       background: var(--vscode-button-background);
     }
-    /* 图标按钮（SPEC-PLAY-01 / 13、A11Y-06）：字形 14px；hover 可视面 20×20、可视圆角 4px，内距 3px 与 VS Code 工具栏（22px 盒 / 16px 字形）同口径——4 倍放大像素实测右隙 4.75 vs 原生 5.00；
-       hover 底色必须用 background-color：background 简写会把 background-clip 重置回 border-box、灰底涨到 26×26 命中区（曾致多轮“偏大”反馈）；
-       3px 透明边框 + padding-box 裁剪把命中区保持 26×26；语义由 title 与可访问名称承载 */
+    /* Icon buttons (SPEC-PLAY-01 / 13, A11Y-06): 14px glyph; 20x20 visible hover face with 4px radius, 3px padding - same gauge as the VS Code toolbar (22px box / 16px glyph); measured at 4x zoom the right gap is 4.75 vs 5.00 native;
+       the hover background must use background-color: the background shorthand resets background-clip to border-box and the grey face grows to the 26x26 hit area (caused several rounds of "too big" feedback);
+       a 3px transparent border + padding-box clipping keeps the hit area at 26x26; semantics are carried by title and the accessible name */
     #controls button.codicon {
       font: normal normal normal 14px/1 codicon;
       padding: 3px;
@@ -1383,13 +1383,13 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 7px;
     }
     #controls button.codicon:hover { background-color: var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 25%)); }
-    /* 循环开关的持续按下态（SPEC-PLAY-03）：aria-pressed 承载状态、active 主题色优先回退 hover 色；
-       规则置于 hover 之后——同特异性后置胜出，ON 按钮悬停时保持按下底色；:disabled 在其后保持优先级 */
+    /* Persistent pressed state of the loop toggle (SPEC-PLAY-03): aria-pressed carries the state, the active theme color is preferred with hover color as fallback;
+       the rule is placed after hover - with equal specificity the later one wins, so an ON button keeps its pressed background while hovered; :disabled stays after it to keep priority */
     #controls button.codicon[aria-pressed='true'] {
       background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 25%)));
     }
     #controls button.codicon:disabled { background-color: transparent; }
-    /* "恢复跟随"浮动入口（SPEC-PLAY-11）：固定定位，底边避开键盘 dock（高度经 CSS 变量同步） */
+    /* "Resume following" floating entry (SPEC-PLAY-11): fixed position, bottom edge clears the keyboard dock (height synced through a CSS variable) */
     #follow-resume {
       position: fixed;
       right: 16px;
@@ -1397,14 +1397,14 @@ export class PreviewPanelManager implements vscode.Disposable {
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     }
     #follow-resume[hidden] { display: none; }
-    /* 状态行（SPEC-PLAY-13）：关键状态位于控制区下方、独占一行；无文案时不占位 */
+    /* Status line (SPEC-PLAY-13): key status sits below the controls on its own row; takes no space without text */
     #playback-status {
       display: block;
       padding: 0 12px 6px;
       color: var(--vscode-descriptionForeground, var(--vscode-foreground));
     }
     #playback-status[hidden] { display: none; }
-    /* 速度控件（SPEC-PLAY-04）：数字输入 + 恢复原速；带拍提示仅在可可靠换算时显示 */
+    /* Speed control (SPEC-PLAY-04): numeric input + reset to original; the BPM hint is shown only when it can be converted reliably */
     #speed-control { display: inline-flex; align-items: center; gap: 4px; }
     #speed-control input {
       font: inherit;
@@ -1418,10 +1418,10 @@ export class PreviewPanelManager implements vscode.Disposable {
     #speed-control input:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     #speed-hint { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
     #speed-hint[hidden] { display: none; }
-    /* 恢复原速为弱化图标：不抢播放 / 停止的视觉位置（禁用底色由通用 .codicon:disabled 规则处理）；
-       margin-left 参与 “% ⟳ ▶ ⏹” 等距节奏：组内 gap 4px + 5.15px = 18px 墨迹间距（实测校准） */
+    /* Reset-to-original is a de-emphasized icon: it does not compete visually with play / stop (the disabled background is handled by the generic .codicon:disabled rule);
+       margin-left takes part in the "% ⟳ ▶ ⏹" even rhythm: in-group gap 4px + 5.15px = 18px ink gap (measured calibration) */
     #controls #speed-reset { margin-left: 5.15px; color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
-    /* 进度条独占一行（SPEC-PLAY-05）：细轨 + 圆点滑块，整行高度保证易点中 */
+    /* The progress bar owns a full row (SPEC-PLAY-05): thin track + round thumb, the full row height keeps it easy to hit */
     #progress-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; }
     #progress { position: relative; flex: 1 1 auto; min-width: 120px; height: 24px; cursor: pointer; touch-action: none; }
     #progress::before {
@@ -1456,7 +1456,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       background: var(--vscode-progressBar-background, var(--vscode-button-background));
       pointer-events: none;
     }
-    /* 拖动中（SPEC-PLAY-05）：轨道与滑块加粗、光标抓取，提供拖动生效的即时反馈 */
+    /* While dragging (SPEC-PLAY-05): thicker track and thumb plus a grabbing cursor give immediate feedback that the drag took effect */
     #progress.abcdesk-dragging { cursor: grabbing; }
     #progress.abcdesk-dragging #progress-fill { height: 6px; }
     #progress.abcdesk-dragging #progress-thumb { transform: translate(-50%, -50%) scale(1.4); }
@@ -1466,7 +1466,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       font-variant-numeric: tabular-nums;
       color: var(--vscode-descriptionForeground, var(--vscode-foreground));
     }
-    /* 声部菜单（SPEC-PLAY-06）：原生 details/summary，面板定位于触发钮下方、不挤压控件行 */
+    /* Voices menu (SPEC-PLAY-06): native details/summary; the panel is positioned under the trigger without squeezing the control row */
     #voices-menu { position: relative; }
     #voices-menu[hidden] { display: none; }
     #voices-menu summary {
@@ -1497,7 +1497,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 4px;
       box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
     }
-    /* 播放中提示“暂停后可调整声部”（SPEC-PLAY-06）：点击即暂停，之后才能改声部 */
+    /* "Pause to adjust voices" hint while playing (SPEC-PLAY-06): clicking pauses first, only then can voices be changed */
     #voices-pause {
       display: block;
       width: 100%;
@@ -1513,7 +1513,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     #voices-pause:hover { background: rgb(128 128 128 / 25%); }
     #voices-pause[hidden] { display: none; }
-    /* 更多菜单（SPEC-SET-07）：与声部菜单同风格；重置入口附说明，不新增命令 */
+    /* More menu (SPEC-SET-07): same style as the voices menu; the reset entry carries an explanation, no new command is added */
     #more-menu { position: relative; }
     #more-menu summary {
       font: inherit;
@@ -1561,7 +1561,7 @@ export class PreviewPanelManager implements vscode.Disposable {
     }
     .abcdesk-voice-row { padding: 3px 4px; white-space: nowrap; }
     .abcdesk-voice-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-    /* 内容状态区（SPEC-STATE-08）：旧谱参考 / 空状态 / 待更新提示，位于控制区下方 */
+    /* Content status area (SPEC-STATE-08): old score reference / empty state / pending update notice, below the controls */
     #content-status {
       display: flex;
       flex-wrap: wrap;
@@ -1572,26 +1572,26 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-bottom: 1px solid var(--vscode-panel-border, transparent);
     }
     #content-status[hidden] { display: none; }
-    /* 解析诊断（SPEC-STATE-06）：摘要留在状态区，原始详情可展开；不可靠定位不显示行号 */
+    /* Parse diagnostics (SPEC-STATE-06): the summary stays in the status area and raw details can be expanded; unreliable positions show no line numbers */
     #view-problems[hidden], #diagnostics-details[hidden] { display: none; }
     #diagnostics-details { flex-basis: 100%; }
     #diagnostics-summary { cursor: pointer; width: fit-content; }
     #diagnostics-list { margin: 4px 0 0; padding-left: 18px; }
     #diagnostics-list li { margin: 2px 0; }
     .abcdesk-diagnostic-detail { color: var(--vscode-descriptionForeground, var(--vscode-foreground)); white-space: pre-wrap; }
-    /* 谱面按纸张外观呈现（SPEC-A11Y-09）：固定前景色，避免 abcjs 的 currentColor 在暗色主题下继承浅色谱线；
-       box-sizing 必须 border-box：abcjs responsive 会往容器写内联 width:100%，content-box 下再加 padding 就溢出撑宽 */
+    /* The score is rendered with a paper look (SPEC-A11Y-09): fixed foreground color so abcjs's currentColor does not inherit light staff lines in dark themes;
+       box-sizing must be border-box: abcjs responsive writes an inline width:100% to the container, and with content-box the padding would overflow and widen it */
     #score { padding: 12px; background: #ffffff; color: #000000; min-height: 120px; position: relative; box-sizing: border-box; }
     /*
-     * 谱面宽度始终跟住容器（覆盖 abcjs 内联 width/height）：viewBox 按比例缩放，
-     * 容器变窄（渲染后出现滚动条 / 面板变化）不再溢出撑出全局横滚，dock 与谱面同宽。
+     * The score width always follows the container (overriding abcjs's inline width/height): the viewBox scales proportionally,
+     * so a narrowing container (scrollbar appearing after render / panel changes) no longer overflows into a global horizontal scroll, and the dock stays as wide as the score.
      */
     #score > svg { display: block; width: 100% !important; height: auto !important; }
     /*
-     * 谱面联动标记（SPEC-PLAY-11）：形状与颜色双重区分——
-     * 当前目标音符（点选 / 查阅共用）为填充 + 音符包围虚线框（覆盖层，不进入 SVG、不阻断点击命中），播放高亮为音符填充换色；两类标记可共存。
-     * CSS 类规则优先于 abcjs 写入的 presentation 属性；但原生点选改写的属性不随类移除复原，
-     * 清除标记时由 webview 按渲染快照还原（见 main.ts 的 snapshotNativePaint / clearTargetMarks）。
+     * Score linkage marks (SPEC-PLAY-11): distinguished by both shape and color -
+     * the current target note (shared by click and inspection) is a fill + a dashed box around the note (an overlay that stays out of the SVG and does not block click hits), playback highlighting recolors the note fill; both marks may coexist.
+     * CSS class rules win over the presentation attributes abcjs writes; but attributes rewritten by native click selection are not restored when the class is removed,
+     * so the webview restores them from the render snapshot when clearing marks (see snapshotNativePaint / clearTargetMarks in main.ts).
      */
     #score .abcdesk-reading-box {
       position: absolute;
@@ -1600,14 +1600,14 @@ export class PreviewPanelManager implements vscode.Disposable {
       border-radius: 3px;
       pointer-events: none;
     }
-    /* 目标填充（SPEC-PLAY-11 / 12）：点选与查阅共用的当前目标；abcjs 原生选中类同色兜底、避免闪现原生亮红；播放高亮规则保持在后（同优先级时后写生效） */
+    /* Target fill (SPEC-PLAY-11 / 12): the current target shared by click and inspection; abcjs's native selected class gets the same color as a fallback to avoid flashing native bright red; playback highlighting rules stay after this (later wins at equal priority) */
     #score .abcjs-note_selected,
     #score .abcdesk-target { fill: #8ab4f8; }
     #score .abcdesk-playing { fill: #d84315; }
     /*
-     * 键盘可视化（SPEC-PLAY-08 / 09）：独立 dock 粘在预览底部，形态就是一架键盘——
-     * 无盒子边框与多余按钮，dock 条只留说明 / 状态与弱化的音域 / 收起控件；
-     * 窄窗口横向滚动而非压缩键宽。
+     * Keyboard visualization (SPEC-PLAY-08 / 09): a separate dock stuck to the bottom of the preview, shaped simply like a keyboard -
+     * no box border or extra buttons; the dock bar keeps only the description / status and the de-emphasized range / collapse controls;
+     * narrow windows scroll horizontally instead of compressing key widths.
      */
     #keyboard {
       flex: 0 0 auto;
@@ -1621,7 +1621,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       #keyboard { background: #262a31; }
     }
     #keyboard[hidden] { display: none; }
-    /* dock 条：说明与状态居左，控件居右；字号比正文小一级，不与键盘争视觉重心 */
+    /* Dock bar: description and status on the left, controls on the right; one font size below body text so it does not compete with the keyboard */
     #keyboard-meta {
       display: flex;
       flex-wrap: wrap;
@@ -1644,7 +1644,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, transparent));
       border-radius: 2px;
     }
-    /* 收起 / 展开为弱化按钮：透明底、悬停才浮现，保持 dock 条安静 */
+    /* Collapse / expand is a de-emphasized button: transparent background that appears on hover, keeping the dock bar quiet */
     #keyboard-collapse {
       font: inherit;
       padding: 1px 6px;
@@ -1662,7 +1662,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       padding: 0 8px 8px;
     }
     #keyboard-scroll[hidden] { display: none; }
-    /* 键盘滚动区可用键盘访问，但不把 88 个琴键加入 Tab 顺序（SPEC-A11Y-13） */
+    /* The keyboard scroll area is keyboard-accessible, but the 88 keys are not added to the Tab order (SPEC-A11Y-13) */
     #keyboard-scroll:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
     #keyboard-keys { display: flex; align-items: flex-start; gap: 0; min-height: 52px; }
     .abcdesk-key { position: relative; box-sizing: border-box; flex: 0 0 auto; border-radius: 0 0 3px 3px; }
@@ -1683,7 +1683,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       background: #2b2b2b;
       box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
     }
-    /* 各 C 的八度标签（SPEC-PLAY-08）：白键右下角，中央 C 即为 C4 */
+    /* Octave labels on each C (SPEC-PLAY-08): bottom-right of the white key, middle C is C4 */
     .abcdesk-key-white[data-note^='C']::after {
       content: attr(data-note);
       position: absolute;
@@ -1693,13 +1693,13 @@ export class PreviewPanelManager implements vscode.Disposable {
       line-height: 1;
       color: #5a5a5a;
     }
-    /* 查阅 / 点选反射（SPEC-PLAY-15）：与查阅虚线框同色系；播放高亮规则保持在后（同键同时命中时播放色优先） */
+    /* Inspection / click reflection (SPEC-PLAY-15): same color family as the inspection dashed box; playback highlighting rules stay after this (playback color wins when both hit the same key) */
     .abcdesk-key-pointed { background: #1a73e8; }
     .abcdesk-key-pointed::after { color: #ffffff; }
-    /* 播放高亮（SPEC-PLAY-09）：与谱面高亮同色；亮键不代表真实按键或必发声 */
+    /* Playback highlighting (SPEC-PLAY-09): same color as the score highlight; a lit key does not mean a real key press or guaranteed sound */
     .abcdesk-key-active { background: #d84315; }
     .abcdesk-key-active::after { color: #ffffff; }
-    /* 方向提示（SPEC-PLAY-08）：视口外有提示音时显示，只提示方向、不拉回滚动位置 */
+    /* Direction hints (SPEC-PLAY-08): shown when a sounding note is outside the viewport; they only hint at the direction and never pull the scroll position back */
     .abcdesk-keyboard-arrow {
       position: absolute;
       top: 50%;
@@ -1715,15 +1715,15 @@ export class PreviewPanelManager implements vscode.Disposable {
     #keyboard-hint-left { left: 4px; }
     #keyboard-hint-right { right: 4px; }
     .abcdesk-keyboard-arrow[hidden] { display: none; }
-    /* 焦点可见性统一（SPEC-A11Y-07）：按钮 / 菜单触发 / 下拉 / 声部复选一律显示主题焦点环 */
+    /* Uniform focus visibility (SPEC-A11Y-07): buttons / menu triggers / selects / voice checkboxes all show the theme focus ring */
     button:focus-visible, summary:focus-visible, select:focus-visible, .abcdesk-voice-row input:focus-visible {
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: 1px;
     }
-    /* 低高度例外（D0）：不把谱面夹在上下固定区域之间，键盘回文档流随内容整体滚动；阈值为暂订实测项 */
+    /* Low-height exception (D0): do not sandwich the score between two fixed areas; the keyboard returns to document flow and scrolls with the content; threshold is a provisional measured item */
     @media (max-height: 400px) {
       #keyboard { position: static; }
-      /* 低高度顶栏压缩（SPEC-PLAY-13）：至少保留播放 / 暂停与停止及关键状态摘要 */
+      /* Low-height top bar compression (SPEC-PLAY-13): keep at least play / pause and stop plus the key status summary */
       #controls { padding: 4px 12px; }
       #progress-row { padding: 0 12px 4px; }
       #playback-status { padding: 0 12px 4px; }
@@ -1734,7 +1734,7 @@ export class PreviewPanelManager implements vscode.Disposable {
   <div id="topbar">
     <div id="tunes" hidden></div>
     <div id="controls">
-      <!-- 速度组（SPEC-PLAY-13）：置于最左——先调速、再播放的练习流 -->
+      <!-- Speed group (SPEC-PLAY-13): leftmost - the practice flow is adjust speed first, then play -->
       <span class="abcdesk-control-group" id="speed-group">
         <span id="speed-control">
           <label id="speed-label" for="speed-input"></label>
@@ -1744,8 +1744,8 @@ export class PreviewPanelManager implements vscode.Disposable {
           <span id="speed-hint" hidden></span>
         </span>
       </span>
-      <!-- 循环、播放 / 暂停、停止同组（SPEC-PLAY-13 / 03）：极窄面板换行时整组下移，不被速度组连累隐藏；
-           循环为常驻切换钮（默认关），持续状态经 aria-pressed 呈现 -->
+      <!-- Loop, play / pause and stop share a group (SPEC-PLAY-13 / 03): in a very narrow panel the whole group wraps down instead of being hidden along with the speed group;
+           loop is a persistent toggle button (off by default) whose state is shown through aria-pressed -->
       <span class="abcdesk-control-group" id="transport-group">
         <button id="loop" type="button" class="codicon codicon-sync" aria-pressed="false"></button>
         <button id="play" type="button" class="codicon codicon-play"></button>
@@ -1762,7 +1762,7 @@ export class PreviewPanelManager implements vscode.Disposable {
       </span>
       <span class="abcdesk-control-group">
         <span id="play-from-here-wrap"><button id="play-from-here" type="button" disabled></button></span>
-        <!-- 更多菜单（SPEC-SET-07）：本文件练习设置重置；不修改 ABC、不新增公开命令 -->
+        <!-- More menu (SPEC-SET-07): resets this file's practice settings; does not modify the ABC and adds no public command -->
         <details id="more-menu">
           <summary id="more-summary"></summary>
           <div id="more-panel">
@@ -1785,14 +1785,14 @@ export class PreviewPanelManager implements vscode.Disposable {
     <div id="content-status" role="status" aria-live="polite" hidden>
       <span id="content-status-text"></span>
       <button id="view-problems" type="button" hidden></button>
-      <!-- 解析诊断详情（SPEC-STATE-06）：不可靠定位的告警只在这里展示，不编造行号 -->
+      <!-- Parse diagnostics details (SPEC-STATE-06): warnings with unreliable positions are shown only here, without inventing line numbers -->
       <details id="diagnostics-details" hidden>
         <summary id="diagnostics-summary"></summary>
         <ul id="diagnostics-list"></ul>
       </details>
       <button id="confirm-tune" type="button" hidden></button>
       <button id="reveal-source" type="button" hidden></button>
-      <!-- 迁移状态页入口（SPEC-LIFE-04）：打开目标预览，不自动打开、不抢焦点 -->
+      <!-- Migration status page entry (SPEC-LIFE-04): opens the target preview, never automatically and without stealing focus -->
       <button id="reveal-target" type="button" hidden></button>
     </div>
     <div id="score" tabindex="-1"></div>
@@ -1848,23 +1848,23 @@ function fileNameOf(document: vscode.TextDocument): string {
   return fileNameOfUri(document.uri);
 }
 
-/** URI 的文件名（最后一段路径）；无路径段时退回完整 URI 文本。 */
+/** File name of a URI (last path segment); falls back to the full URI text when there is no path segment. */
 function fileNameOfUri(uri: vscode.Uri): string {
   const segments = uri.path.split('/');
   return segments[segments.length - 1] || uri.toString();
 }
 
-/** 来源标识的展示文本（SPEC-LIFE-06）：普通文件用完整路径，未保存文档用标签名。 */
+/** Display text of a source identity (SPEC-LIFE-06): the full path for ordinary files, the label for unsaved documents. */
 function displayPathOf(uri: vscode.Uri): string {
   return uri.scheme === 'untitled' ? uri.path : uri.fsPath;
 }
 
-/** 文件名转义为字面量 glob（SPEC-LIFE-08）：观察单个绑定文件，不把名称中的通配符当作模式。 */
+/** Escape a file name as a literal glob (SPEC-LIFE-08): watch the single bound file without treating wildcard characters in the name as a pattern. */
 function escapeGlobPattern(name: string): string {
   return name.replace(/[?*[\]{}]/g, (char) => `[${char}]`);
 }
 
-/** 目标是否仍可从文件系统读取（SPEC-LIFE-08 存在性复核）：一次删除事件不构成永久丢失判定。 */
+/** Whether the target is still readable from the file system (SPEC-LIFE-08 existence re-check): a single delete event is not a permanent-loss verdict. */
 async function fileReadable(uri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(uri);
@@ -1874,7 +1874,7 @@ async function fileReadable(uri: vscode.Uri): Promise<boolean> {
   }
 }
 
-/** 读取文件文本（无缓冲区时与最近推送比对）；读取失败返回 undefined，保持现状等待下一次事件。 */
+/** Read file text (compared with the latest push when there is no buffer); returns undefined on failure so the current state is kept until the next event. */
 async function readTextFile(uri: vscode.Uri): Promise<string | undefined> {
   try {
     return new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
@@ -1883,13 +1883,13 @@ async function readTextFile(uri: vscode.Uri): Promise<string | undefined> {
   }
 }
 
-/** 面板标题：未保存新文档标明尚未保存（SPEC-CMD-06）。 */
+/** Panel title: unsaved new documents are marked as not yet saved (SPEC-CMD-06). */
 function panelTitle(document: vscode.TextDocument): string {
   const fileName = fileNameOf(document);
   return document.isUntitled ? vscode.l10n.t('{0} (Unsaved)', fileName) : fileName;
 }
 
-/** 联动不可用原因的用户可见文案（SPEC-PLAY-11 / 12）。 */
+/** User-visible text for the reason linkage is unavailable (SPEC-PLAY-11 / 12). */
 function linkageUnavailableText(reason: LinkageUnavailableReason): string {
   switch (reason) {
     case 'choose-tune':

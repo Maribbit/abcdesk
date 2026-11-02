@@ -1,21 +1,21 @@
 /**
- * 播放控件的纯逻辑（SPEC-PLAY-04 / 05 / 06、SPEC-ENV-07）：速度换算与解析、时间显示、
- * 声部清单与和弦轨识别、带拍换算提示、演奏视图的乐器统一。
+ * Pure logic for the playback controls (SPEC-PLAY-04 / 05 / 06, SPEC-ENV-07): speed conversion and parsing, time display,
+ * voice list and chord-track detection, beat hint conversion, instrument unification for the performance view.
  *
- * 全部为纯函数与结构类型（不 import abcjs 运行时，与 keyboard.ts 同先例），
- * 由 test/playback.test.ts 真实覆盖；PLAY 域为 manual 验证（登记见 docs/manual-checks.md），
- * 测试标题额外引用条目以便双向校验。
+ * Everything is pure functions and structural types (no abcjs runtime import, same precedent as keyboard.ts),
+ * really covered by test/playback.test.ts; the PLAY domain is manual-verified (registered in docs/manual-checks.md),
+ * so test titles additionally cite the items for two-way checking.
  */
 
 import type { AudioTracks, SynthOptions, TuneObject } from 'abcjs';
 
-/** 速度百分比范围、步进与默认值（SPEC-PLAY-04：默认 100%、范围 25%～200%）。 */
+/** Speed percentage range, step and default (SPEC-PLAY-04: default 100%, range 25%-200%). */
 export const SPEED_MIN = 25;
 export const SPEED_MAX = 200;
 export const SPEED_DEFAULT = 100;
 export const SPEED_STEP = 5;
 
-/** 规整速度为合法值（SPEC-PLAY-04）：四舍五入取整并夹取到范围；非数值回退默认。 */
+/** Normalize speed to a legal value (SPEC-PLAY-04): round to integer and clamp to range; non-numeric falls back to default. */
 export function clampSpeed(percent: number): number {
   if (!Number.isFinite(percent)) {
     return SPEED_DEFAULT;
@@ -24,8 +24,8 @@ export function clampSpeed(percent: number): number {
 }
 
 /**
- * 解析速度输入（SPEC-PLAY-04 / P06 口径）：空值与非法数字返回 null（由调用方还原当前值）；
- * 越界数值夹取到范围（不判非法）。
+ * Parse speed input (SPEC-PLAY-04 / P06 wording): empty and invalid numbers return null (the caller restores the current value);
+ * out-of-range numbers are clamped (not treated as invalid).
  */
 export function parseSpeedPercent(text: string): number | null {
   const trimmed = text.trim();
@@ -39,7 +39,7 @@ export function parseSpeedPercent(text: string): number | null {
   return clampSpeed(value);
 }
 
-/** 毫秒 → "M:SS"（进度条时间标签，SPEC-PLAY-05）；负值与非有限值按 0 处理。 */
+/** Milliseconds -> "M:SS" (progress time label, SPEC-PLAY-05); negative and non-finite values are treated as 0. */
 export function formatClock(milliseconds: number): string {
   const safe = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
   const totalSeconds = Math.floor(safe / 1000);
@@ -48,13 +48,13 @@ export function formatClock(milliseconds: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-/** 声部清单条目（SPEC-PLAY-06）：index 为演奏时序中的声部序号；name 为空表示无声部名。 */
+/** Voice list entry (SPEC-PLAY-06): index is the voice index in the performance timing; empty name means unnamed. */
 export interface VoiceEntry {
   index: number;
   name: string | null;
 }
 
-/** 声部清单所需的最小曲目结构（abcjs TuneObject 的子集）。 */
+/** Minimal tune structure required for the voice list (subset of abcjs TuneObject). */
 export interface VoiceStaffView {
   clef?: { type?: string };
   voices?: ReadonlyArray<unknown>;
@@ -70,9 +70,9 @@ export interface VoiceSource {
 }
 
 /**
- * 收集曲目的实际声部清单（SPEC-PLAY-06：展示 ABC 实际声部，不强制第一声部为示范）。
- * 计数镜像 abcjs sequencer：逐行归零、跳过 TAB 谱表、谱表内按 voices 顺序、跨行取最大；
- * 名称取该声部首个非空 staff.title（abcjs 已在 fixTitles 后转为字符串数组），无名回退 null。
+ * Collect the tune's actual voice list (SPEC-PLAY-06: show the real ABC voices; the first voice is not forced to be the demo).
+ * Counting mirrors the abcjs sequencer: reset per line, skip TAB staves, follow voices order within a staff, take the maximum across lines;
+ * the name is the voice's first non-empty staff.title (already a string array after abcjs fixTitles), null when unnamed.
  */
 export function collectVoices(tune: VoiceSource): VoiceEntry[] {
   const names: Array<string | null> = [];
@@ -96,11 +96,11 @@ export function collectVoices(tune: VoiceSource): VoiceEntry[] {
 }
 
 /**
- * SPEC-SET-04：用音符在解析输入中的位置核验 V: 归属，不将显示名或轨序号当作标识。
- * abcjs 不公开原 V: id；不完整、矛盾或无法核验的轨一律返回未知。
+ * SPEC-SET-04: verify V: ownership from the note's position in the parse input; display names or track indexes are not identifiers.
+ * abcjs does not expose the original V: id; incomplete, contradictory or unverifiable tracks all return unknown.
  */
 export function voiceSignature(tune: TuneObject, abc: string): string | null {
-  // 先掩蔽文本块和非声部字段，再过滤注释、字符串、装饰；始终保留 UTF-16 长度和行界。
+  // Mask text blocks and non-voice fields first, then filter comments, strings and decorations; always preserve UTF-16 length and line boundaries.
   let block: string | undefined;
   const source = abc.split('\n').map((line) => {
     const begin = /^%%begin(\w+)/i.exec(line);
@@ -154,14 +154,14 @@ export function voiceSignature(tune: TuneObject, abc: string): string | null {
   }
   if (entries.length === 0 || entries.some((entry) => ids[entry.index] === undefined)) return null;
   if (new Set(ids).size !== entries.length || [...declared].some((id) => !ids.includes(id))) return null;
-  // null 是内部默认声部标识，与任何显式 V: 字符串均不冲突。
+  // null is the internal default voice id and never collides with an explicit V: string.
   return JSON.stringify(entries.map((entry) => [declared.size === 0 ? null : ids[entry.index], entry.name]));
 }
 
 /**
- * 是否含自动和弦伴奏轨（SPEC-PLAY-06 / 10）：abcjs 的和弦轨 channel 为声部数本身
- * （鼓轨为声部数 + 1，见 abcjs ChordTrack / writeDrum）；首条 program 指令即该轨标识。
- * 检测须用无静音参数的展开产物（chordsOff 时完全无轨），无该轨时菜单不显示和弦开关。
+ * Whether an automatic chord accompaniment track exists (SPEC-PLAY-06 / 10): the abcjs chord track's channel equals the voice count
+ * (the drum track is voice count + 1, see abcjs ChordTrack / writeDrum); the first program instruction identifies the track.
+ * Detection must use the expansion without mute parameters (with chordsOff the track is absent entirely); without it the menu hides the chord toggle.
  */
 export function hasChordTrack(tracks: unknown, voiceCount: number): boolean {
   if (!Array.isArray(tracks)) {
@@ -183,24 +183,24 @@ export function hasChordTrack(tracks: unknown, voiceCount: number): boolean {
       if (event.channel === voiceCount) {
         return true;
       }
-      break; // 该轨首条 program 不是和弦轨标识：后续 program 只做乐器切换，不是和弦轨
+      break; // The track's first program is not the chord-track marker: later programs only switch instruments, this is not the chord track
     }
   }
   return false;
 }
 
-/** 带拍提示所需的最小曲目结构（abcjs TuneObject 的子集）。 */
+/** Minimal tune structure required for the beat hint (subset of abcjs TuneObject). */
 export interface BeatHintSource {
   getBeatLength: () => number;
   getBpm: () => number;
-  /** abcjs 运行时属性：按小节号索引的曲中速度位置（0 = 曲首 Q:）；类型声明未公开，按 unknown 读取。 */
+  /** abcjs runtime property: mid-tune tempo positions indexed by measure number (0 = the opening Q:); undeclared type, read as unknown. */
   tempoLocations?: unknown;
 }
 
 /**
- * 带拍换算提示（SPEC-PLAY-04）：可可靠换算时返回"四分音符每分钟数"，否则 null（不显示猜测值）。
- * 仅在四分音符为一拍（beatLength = 0.25）且除曲首外无速度变更时给出；
- * getBpm 已把 Q: 的拍单位声明换算到拍上，这里只需按速度百分比缩放。
+ * Beat hint conversion (SPEC-PLAY-04): returns "quarter notes per minute" when it can be converted reliably, otherwise null (no guessed value shown).
+ * Given only when a quarter note is one beat (beatLength = 0.25) and there is no tempo change other than at the start;
+ * getBpm already converts the beat unit declared in Q:, so only scaling by the speed percentage remains.
  */
 export function beatHintFor(tune: BeatHintSource, speedPercent: number): number | null {
   if (tune.getBeatLength() !== 0.25) {
@@ -212,31 +212,31 @@ export function beatHintFor(tune: BeatHintSource, speedPercent: number): number 
   }
   for (const key of Object.keys(locations)) {
     if (Number(key) > 0) {
-      return null; // 曲中变速：单一提示值无法表达，按所在位置解释
+      return null; // Mid-tune tempo change: a single hint cannot express it; interpret by position instead
     }
   }
   return Math.round((tune.getBpm() * speedPercent) / 100);
 }
 
-/** 钢琴在 General MIDI 乐器表中的编号（abcjs 展开产物按数字索引；0 即 acoustic_grand_piano）。 */
+/** Piano's number in the General MIDI instrument table (abcjs expansion indexes by number; 0 is acoustic_grand_piano). */
 const PIANO_PROGRAM = 0;
 
 /**
- * 仅钢琴的播放视图（SPEC-ENV-07）：包装出以原曲目为原型的副本，只覆盖 setUpAudio，
- * 把展开产物的乐器指令（program / note 事件的 instrument）统一为钢琴。
+ * Piano-only playback view (SPEC-ENV-07): wraps a copy prototyped on the original tune that overrides only setUpAudio,
+ * unifying the expansion's instrument instructions (program / note event instrument) to piano.
  *
- * 为什么在展开产物上统一：合成器的音色样本请求发生在 init 内部、按展开产物的 instrument
- * 归组（早于 sequenceCallback 与缓冲生成），只改音序映射会造成"请求集合与实际放置"错配——
- * 材料中的非钢琴指令（如 %%MIDI program 73）会请求本地不存在的音色目录、并在放置时被静默跳过。
- * 为什么不改原曲目：MIDI 导出要求保留材料中的乐器指令（SPEC-EXP-05），原对象须保持原样；
- * 视图其余方法（拍号 / 弱起 / 拍数等）经原型链沿用原对象。
+ * Why unify on the expansion: the synth requests soundfont samples inside init, grouped by the expansion's instrument
+ * (before sequenceCallback and buffer generation); changing only the sequence mapping would mismatch "requested set vs actual placement" -
+ * non-piano instructions in the material (e.g. %%MIDI program 73) would request a locally missing soundfont directory and be silently skipped at placement.
+ * Why not modify the original tune: MIDI export must keep the material's instrument instructions (SPEC-EXP-05), so the original object stays intact;
+ * the view's other methods (meter / pickup / beat count, etc.) reach the original via the prototype chain.
  */
 export function pianoOnlyTuneView<T extends { setUpAudio: (options: SynthOptions) => AudioTracks }>(
   tune: T,
 ): T {
   const view = Object.create(tune) as T;
   const originalSetUpAudio = tune.setUpAudio;
-  // 原展开方法经 this 读取曲目（formatting / lines），必须以原对象为 this 调用
+  // The original expansion method reads the tune via this (formatting / lines) and must be called with the original object as this
   view.setUpAudio = (options: SynthOptions): AudioTracks => {
     const flattened = originalSetUpAudio.call(tune, options);
     for (const track of flattened.tracks) {

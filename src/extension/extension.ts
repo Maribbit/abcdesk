@@ -3,11 +3,11 @@ import { choosePreviewTarget, isAbcTarget, type TargetCandidate } from '../core/
 import { runExportCommand } from './exports';
 import { PreviewPanelManager } from './previewPanel';
 
-// 公开命令恰为八个（SPEC-CMD-01）：ID 必须与 package.json、docs/spec/cmd.md 逐字一致，
-// 数量与 ID 集合由 test/manifest.test.ts 的绑定测试守住；命令注册集中在 activate。
+// Exactly eight public commands (SPEC-CMD-01): ids must match package.json and docs/spec/cmd.md verbatim;
+// the count and id set are guarded by the binding test in test/manifest.test.ts; command registration is centralized in activate.
 
 export function activate(context: vscode.ExtensionContext): void {
-  // 练习记录保存在扩展的工作区状态（SPEC-SET-02 / 08、P04 决议）
+  // Practice records live in the extension's workspace state (SPEC-SET-02 / 08, decision P04)
   const previews = new PreviewPanelManager(context.extensionUri, context.workspaceState);
   context.subscriptions.push(previews);
 
@@ -15,28 +15,28 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('abcdesk.openPreviewToSide', (resource?: unknown) =>
       openPreviewToSide(previews, resource),
     ),
-    // 播放主干（M0）：播放 / 暂停与停止（SPEC-CMD-07 / 09 / 10 / 11）。
+    // Playback core (M0): play / pause and stop (SPEC-CMD-07 / 09 / 10 / 11).
     vscode.commands.registerCommand('abcdesk.togglePlayback', () => togglePlaybackCommand(previews)),
     vscode.commands.registerCommand('abcdesk.stop', () => stopPlaybackCommand(previews)),
-    // 源码联动（M0）：从光标播放 / 从所选音符播放 / 转到源码编辑（SPEC-CMD-07 / 08 / 12）。
+    // Source linkage (M0): play from cursor / play from selected note / go to source (SPEC-CMD-07 / 08 / 12).
     vscode.commands.registerCommand('abcdesk.playFromCursor', () => playFromCursorCommand(previews)),
     vscode.commands.registerCommand('abcdesk.playFromSelectedNote', () =>
       playFromSelectedNoteCommand(previews),
     ),
     vscode.commands.registerCommand('abcdesk.goToSource', () => goToSourceCommand(previews)),
-    // 导出（M0）：MIDI / SVG 独立准备与保存流程（SPEC-EXP-01 ~ 08）。
+    // Export (M0): MIDI / SVG independent preparation and save flow (SPEC-EXP-01 ~ 08).
     vscode.commands.registerCommand('abcdesk.exportMidi', () => runExportCommand(previews, 'midi')),
     vscode.commands.registerCommand('abcdesk.exportSvg', () => runExportCommand(previews, 'svg')),
   );
 
-  // 非播放期间的文档变化（含未保存修改与外部写入重载）推送到对应预览；
-  // 播放中的待更新 / 换版规则由后续批次实现（见 docs/spec/state.md）。
+  // Document changes outside playback (unsaved edits and reloads from external writes) are pushed to the matching preview;
+  // pending-update / version-switch rules during playback belong to a later batch (see docs/spec/state.md).
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
       previews.notifyDocumentChanged(event.document);
     }),
-    // 文件生命周期（SPEC-LIFE-03 / 05 / 06）：重命名 / 移动按可靠的新旧对迁移绑定；
-    // 首次保存与另存为区分接续；关闭标签后按磁盘存在性复核来源状态。
+    // File lifecycle (SPEC-LIFE-03 / 05 / 06): rename / move migrates the binding on reliable old-new pairs;
+    // first save and save-as are told apart for continuation; after a tab closes the source state is re-checked against disk.
     vscode.workspace.onDidRenameFiles((event) => {
       previews.notifyFilesRenamed(event.files);
     }),
@@ -46,8 +46,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCloseTextDocument((document) => {
       previews.notifyDocumentClosed(document);
     }),
-    // 源码光标移动推送到对应预览（SPEC-PLAY-11）：停止 / 暂停时突出映射音符并滚动，
-    // 播放中只更新查阅标记；光标离开绑定文档时清除各预览的标记。
+    // Source cursor moves are pushed to the matching preview (SPEC-PLAY-11): when stopped / paused the mapped note is highlighted and scrolled into view,
+    // during playback only the inspection marker is updated; when the cursor leaves the bound document each preview's marker is cleared.
     vscode.window.onDidChangeTextEditorSelection((event) => {
       previews.notifySelectionChanged(event.textEditor);
     }),
@@ -55,15 +55,15 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // 命令注册与面板随 context 订阅自动释放。
+  // Command registrations and panels are released automatically via context subscriptions.
 }
 
 /**
- * 打开预览命令（SPEC-CMD-03 / 04 / 05 / 06）：
- * - 菜单传入的明确目标优先，无明确目标时用调用前的活动编辑器上下文；
- * - 目标无效时不回退到其他文件，也不弹选择器；
- * - 无任何目标时（命令面板）允许选择一个文件，取消不创建预览；
- * - 资源管理器入口不要求先打开源码；只显示预览，不起播。
+ * Open preview command (SPEC-CMD-03 / 04 / 05 / 06):
+ * - an explicit target from a menu wins; without one the active editor context before the invocation is used;
+ * - an invalid target neither falls back to another file nor shows a picker;
+ * - with no target at all (command palette) a file may be picked; cancelling creates no preview;
+ * - the explorer entry does not require the source to be open; it only shows the preview and does not start playback.
  */
 async function openPreviewToSide(previews: PreviewPanelManager, resource: unknown): Promise<void> {
   const explicit = resource instanceof vscode.Uri ? candidateFromUri(resource) : undefined;
@@ -90,8 +90,8 @@ async function openPreviewToSide(previews: PreviewPanelManager, resource: unknow
 }
 
 /**
- * 播放 / 暂停命令（SPEC-CMD-07 / 09 / 11）：控制当前曲目，不跟随光标切曲；
- * 无有效目标时不回退、不弹选择器，说明缺少目标（SPEC-CMD-05）。
+ * Play / pause command (SPEC-CMD-07 / 09 / 11): controls the current tune and does not follow the cursor to another tune;
+ * without a valid target there is no fallback and no picker, only a missing-target message (SPEC-CMD-05).
  */
 function togglePlaybackCommand(previews: PreviewPanelManager): void {
   const document = resolveControlTarget(previews);
@@ -103,8 +103,8 @@ function togglePlaybackCommand(previews: PreviewPanelManager): void {
 }
 
 /**
- * 停止命令（SPEC-CMD-10 / 11）：不新建预览；
- * 无有效目标时说明缺少目标，无副作用（SPEC-CMD-05）。
+ * Stop command (SPEC-CMD-10 / 11): never creates a preview;
+ * without a valid target it reports the missing target with no side effects (SPEC-CMD-05).
  */
 function stopPlaybackCommand(previews: PreviewPanelManager): void {
   const document = resolveControlTarget(previews);
@@ -116,9 +116,9 @@ function stopPlaybackCommand(previews: PreviewPanelManager): void {
 }
 
 /**
- * "从光标播放"命令（SPEC-CMD-07 / 08）：只取当前 ABC 源码编辑器的光标；
- * 可靠确定曲目与音符时显式跨曲起播，按需打开对应预览并保留源码焦点；
- * 无有效源码目标时不回退、不弹选择器（SPEC-CMD-05）。
+ * "Play from cursor" command (SPEC-CMD-07 / 08): takes only the cursor of the current ABC source editor;
+ * when tune and note are reliably determined it explicitly starts playback across tunes, opening the preview as needed while keeping source focus;
+ * without a valid source target there is no fallback and no picker (SPEC-CMD-05).
  */
 function playFromCursorCommand(previews: PreviewPanelManager): void {
   const editor = vscode.window.activeTextEditor;
@@ -131,8 +131,8 @@ function playFromCursorCommand(previews: PreviewPanelManager): void {
 }
 
 /**
- * "从所选音符播放"命令（SPEC-CMD-08）：取预览内的当前目标音符（谱面点选或源码光标
- * 命中维护的同一目标）与起播映射；无预览 / 无目标时由预览面板回原因说明（SPEC-PLAY-12）。
+ * "Play from selected note" command (SPEC-CMD-08): takes the preview's current target note (the single target maintained by
+ * score clicks or source cursor hits) and its start mapping; with no preview / no target the panel reports the reason (SPEC-PLAY-12).
  */
 function playFromSelectedNoteCommand(previews: PreviewPanelManager): void {
   const document = resolveControlTarget(previews);
@@ -144,9 +144,9 @@ function playFromSelectedNoteCommand(previews: PreviewPanelManager): void {
 }
 
 /**
- * "转到源码编辑"命令（SPEC-CMD-12）：目标为当前预览的来源文档并显式转移焦点；
- * 无有效音符映射时只打开来源文件、不套用旧偏移；来源标签已关闭时按 URI 重新打开，
- * 文件不可读取时才说明原因。
+ * "Go to source" command (SPEC-CMD-12): targets the current preview's source document and explicitly moves focus;
+ * without a valid note mapping it only opens the source file without applying a stale offset; a closed source tab is reopened by URI,
+ * and the reason is reported only when the file cannot be read.
  */
 function goToSourceCommand(previews: PreviewPanelManager): void {
   const document = resolveControlTarget(previews);
@@ -154,7 +154,7 @@ function goToSourceCommand(previews: PreviewPanelManager): void {
     void previews.requestGoToSource(document);
     return;
   }
-  // 前台预览的来源标签已关闭（SPEC-LIFE-05）：绑定仍在，按 URI 重新打开（SPEC-CMD-12）
+  // The foreground preview's source tab is closed (SPEC-LIFE-05): the binding remains, reopen by URI (SPEC-CMD-12)
   const boundUri = previews.activeBoundUri();
   if (boundUri !== undefined) {
     void previews.requestGoToSourceByUri(boundUri);
@@ -164,8 +164,8 @@ function goToSourceCommand(previews: PreviewPanelManager): void {
 }
 
 /**
- * 控制命令的目标解析（SPEC-CMD-04 / 05）：预览在前台时使用其绑定文档，
- * 否则使用调用前的活动编辑器上下文；无目标时返回 undefined，不回退到其他文件。
+ * Target resolution for control commands (SPEC-CMD-04 / 05): a foreground preview uses its bound document,
+ * otherwise the active editor context before the invocation; undefined when there is no target, never another file.
  */
 function resolveControlTarget(previews: PreviewPanelManager): vscode.TextDocument | undefined {
   const fromPreview = previews.activeDocument();
