@@ -16,6 +16,10 @@
 
 "清单"指 `docs/archive/vscode-extension-plan.md` §7 验证清单；条目见 `docs/spec/`。
 
+## course：氛围钢琴即兴自学课程
+
+[`course/`](course/) 不是测试材料，是维护者用 ABC Desk 自学氛围钢琴即兴的课程，同时作为 archive 设计 §6 / 计划 §3 学习循环的真实样例。入口 [`course/learning-guide.md`](course/learning-guide.md)（agent 阅读顺序、调整规则、诚实性边界）与 [`course/profile.md`](course/profile.md)（条件与阶段约束）；每课一个目录，含 `exercise.abc`（`demo` 右手示范 + `left` 左手，示范后接等长空白供接句，整段循环）与 `session.md`（顶部"当前进展 / 下次继续"，历史按次追加）。当前已写阶段 0–1 的三课：`01-quiet-start`、`02-three-notes`、`03-five-notes`；后续课按练习自述再写。
+
 ## 09 原创曲目：《雨灯与归舟》
 
 一首以摇曳舟歌为主题的原创室内乐小品：雨灯中的应答、明亮的水光、小调夜桥、四四拍的风起，最后回到主题并安静收束。编排围绕主题变奏、功能和声与声部应答展开，同时覆盖多种 ABC 记法。
