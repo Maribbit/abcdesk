@@ -4,7 +4,8 @@
   "description": "A practice-oriented ABC music workbench: score preview, playback and a file-based practice loop.",
   "version": "0.0.1",
   "publisher": "abcdesk",
-  "license": "MIT",
+  "author": "Maribbit",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "engines": {
     "vscode": "^1.75.0"

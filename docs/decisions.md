@@ -2,6 +2,12 @@
 
 轻量格式：每条含 日期 / 决策 / 理由；后续新决策追加在文件头部（时间倒序）。
 
+## 2026-11-16 开源协议改为 AGPL-3.0-or-later（与网页版对齐）
+
+- 决策：扩展从 MIT 改为 AGPL-3.0-or-later，与 ABC Desk Web 同一套条款；`LICENSE` 换为 AGPL-3.0 全文，`package.json` 的 `license` 与 lockfile 根元数据同步、补 `author`，README 末尾增加许可段（英文正文 + 中文同段）。第三方资产不并入：abcjs（MIT）、FluidR3_GM 采样（CC BY 3.0）、codicons（CC BY 4.0）保留各自条款与 media/ 内的声明。`docs/archive/` 冻结清单里的「许可（MIT）」保持原样，冻结层只作追溯。
+- 理由：MIT 允许闭源分叉，与网页版 AGPL 第 13 条的意图相反，而两仓共享 `src/core` 的代码与测试口径，协议不同会让回流与再分发变得含糊；全部提交均由同一版权人完成，换协议没有授权门槛。扩展本身不提供网络服务，第 13 条实际只在分发修改版时生效，日常自用不受影响。
+- 影响：`LICENSE`、`package.json`、`package-lock.json`、`README.md`、本文件；不改代码与规格条目，`npm run check` 口径不变。
+
 ## 2026-11-02 语言策略：按读者分层，注释转英文，流程文档保持中文
 
 - 决策（用户确认）：不全项目一刀切，按读者分层，每层只保留一种语言。代码注释、测试标题、脚本输出、字符串内嵌的 CSS / HTML 注释改为英文，现有中文注释用独立提交一次性转换；`docs/`（spec / plan / decisions / manual-checks / conventions）与 `samples/course/` 保持中文，作为维护者工作语言和唯一事实源，不维护英文副本；README / CHANGELOG / CONTRIBUTING / 商店文案英文为主、README 只留简短中文入口段（随 M4 商店版 README 一并改，当前双语 README 不动）；UI 文案维持英文默认 + 简体中文。`scripts/spec-check.mjs` 解析的 spec 标记跟随中文文档不变。将来有外部贡献者或上架时，在 CONTRIBUTING 中说明流程文档为维护者工作语言。

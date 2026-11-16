@@ -55,3 +55,15 @@ npm run check        # typecheck + lint + test + spec:check
 ```
 
 调试：在 VS Code 中按 F5 启动 Extension Development Host；命令面板搜索 `ABC Desk:`。
+
+## License ｜ 开源协议
+
+**GNU AGPL-3.0-or-later.** See [LICENSE](LICENSE). Modify the extension and pass it on — a fork in the Marketplace, a build inside a company — and section 13 asks you to offer its source to the people using it. The web counterpart, [ABC Desk Web](https://github.com/Maribbit/abcdesk-web), is under the same terms.
+
+Third-party material keeps its own terms: abcjs (MIT), the bundled FluidR3_GM piano samples (CC BY 3.0, see `media/soundfonts/THIRD_PARTY_NOTICES.txt`) and the bundled codicons (CC BY 4.0, see `media/codicons/THIRD_PARTY_NOTICES.txt`).
+
+**GNU AGPL-3.0-or-later（或更新版本）。** 见 [LICENSE](LICENSE)。修改后转手——发布到商店的分支、公司内部的构建都算——第 13 条要求向使用者提供源码。网页版 [ABC Desk Web](https://github.com/Maribbit/abcdesk-web) 采用同一套条款。
+
+第三方内容保留各自条款：abcjs（MIT）、随包的 FluidR3_GM 钢琴采样（CC BY 3.0，见 `media/soundfonts/THIRD_PARTY_NOTICES.txt`）、随包的 codicons（CC BY 4.0，见 `media/codicons/THIRD_PARTY_NOTICES.txt`）。
+
+Copyright (c) 2026 Maribbit.
